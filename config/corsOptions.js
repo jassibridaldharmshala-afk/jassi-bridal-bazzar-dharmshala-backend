@@ -10,6 +10,7 @@ const defaultOrigins = [
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'https://jassi-general-store.onrender.com',
+  'https://jassi-bridal-bazzar-dharmshalas.onrender.com',
 ];
 
 function parseOrigins(value) {
