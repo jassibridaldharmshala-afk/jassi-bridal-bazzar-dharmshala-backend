@@ -1,0 +1,13 @@
+const router = require('express').Router();
+const content = require('../controllers/storeContentController');
+router.get('/', content.get);
+router.put('/', content.update);
+router.put('/draft', content.saveDraft);
+router.post('/preflight', content.preflight);
+router.post('/publish', content.publish);
+router.post('/schedule', content.schedule);
+router.delete('/schedule', content.cancelSchedule);
+router.post('/schedule/retry', content.retrySchedule);
+router.get('/history', content.history);
+router.post('/history/:versionId/restore', content.restore);
+module.exports = router;

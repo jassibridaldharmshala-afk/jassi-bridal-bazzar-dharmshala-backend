@@ -1,0 +1,10 @@
+const router = require('express').Router();
+const controller = require('../controllers/orderAlertController');
+const { protect } = require('../middleware/authMiddleware');
+const limit = require('express-rate-limit')({ windowMs: 15 * 60000, max: 30, keyGenerator: req => String(req.user._id), standardHeaders: true, legacyHeaders: false });
+router.use(protect, controller.authorize);
+router.get('/', controller.read);
+router.put('/', limit, controller.save);
+router.post('/test', limit, controller.test);
+router.post('/:id/retry', limit, controller.retry);
+module.exports = router;

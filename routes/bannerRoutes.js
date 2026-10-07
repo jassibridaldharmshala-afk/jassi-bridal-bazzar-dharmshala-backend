@@ -1,0 +1,17 @@
+const router = require('express').Router();
+const rateLimit = require('express-rate-limit');
+const banner = require('../controllers/bannerController');
+const { protect } = require('../middleware/authMiddleware');
+const { adminOnly } = require('../middleware/adminMiddleware');
+router.get('/', banner.getBanners);
+const engagementLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false });
+router.post('/:id/events', engagementLimiter, banner.recordBannerEvent);
+router.put('/reorder', protect, adminOnly, banner.reorderBanners);
+router.post('/:id/duplicate', protect, adminOnly, banner.duplicateBanner);
+router.patch('/:id/status', protect, adminOnly, banner.updateBannerStatus);
+router.patch('/:id/restore', protect, adminOnly, banner.restoreBanner);
+router.get('/:id', protect, adminOnly, banner.getBannerById);
+router.post('/', protect, adminOnly, banner.createBanner);
+router.put('/:id', protect, adminOnly, banner.updateBanner);
+router.delete('/:id', protect, adminOnly, banner.deleteBanner);
+module.exports = router;

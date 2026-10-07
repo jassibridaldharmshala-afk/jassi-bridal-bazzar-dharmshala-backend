@@ -1,0 +1,47 @@
+{
+  "name": "jassi-general-store-backend",
+  "version": "1.0.0",
+  "description": "Jassi General Store backend API",
+  "main": "server.js",
+  "engines": {
+    "node": "20.x"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "server": "node server.js",
+    "worker:reels": "node workers/reelImport.worker.js",
+    "check": "node --check server.js && node --check app.js",
+    "keys:license": "node scripts/generate-license-keys.js",
+    "check:sms": "node scripts/check-sms-config.js",
+    "test": "node --test --test-concurrency=1 \"tests/*.test.js\"",
+    "test:payments": "node scripts/test-payment-flow.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.888.0",
+    "bcryptjs": "^2.4.3",
+    "bullmq": "^5.80.11",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.6.0",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "fast-xml-parser": "5.7.3",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.9.5",
+    "multer": "^1.4.5-lts.1",
+    "razorpay": "^2.9.6",
+    "sharp": "^0.34.5",
+    "twilio": "^6.0.2"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.2.0"
+  },
+  "overrides": {
+    "qs": "6.16.0"
+  }
+}

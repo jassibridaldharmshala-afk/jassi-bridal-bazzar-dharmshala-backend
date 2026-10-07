@@ -1,0 +1,20 @@
+const router = require('express').Router();
+const traffic = require('../controllers/trafficController');
+const { roleAllows } = require('../models/StoreMember');
+const { asyncHandler } = require('../middleware/validate');
+const { requireAdminCustomerStoreAccess } = require('../middleware/storeMiddleware');
+const { ApiError } = require('../utils/apiError');
+const limit = require('express-rate-limit')({ windowMs: 60000, limit: 20, standardHeaders: true, legacyHeaders: false });
+router.use(asyncHandler(async (req, _res, next) => {
+  if (req.user?.role === 'admin' && req.user?.activeMode === 'admin') await new Promise((resolve, reject) => requireAdminCustomerStoreAccess(req, _res, error => error ? reject(error) : resolve()));
+  if (req.user?.role === 'admin' && req.user?.activeMode === 'admin' && !req.storeMember) return next();
+  const permission = req.method === 'GET' ? 'settings.read' : 'settings.write';
+  if (!req.storeMember || !roleAllows(req.storeMember.role, permission)) throw new ApiError('FORBIDDEN', 'You do not have permission to manage traffic settings.');
+  if (req.store?.catalogStructure?.clientPermissions?.reports === false) throw new ApiError('FORBIDDEN', 'Reports are disabled for this store.');
+  next();
+}));
+router.get('/', traffic.readSettings);
+router.put('/', limit, traffic.saveSettings);
+router.post('/clear', limit, traffic.clearHistory);
+router.post('/digests/:id/retry', limit, traffic.retryDigest);
+module.exports = router;

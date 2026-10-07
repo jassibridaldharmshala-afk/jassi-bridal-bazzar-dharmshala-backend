@@ -1,0 +1,90 @@
+services:
+  - type: web
+    name: jassi-general-store-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: STRICT_PRODUCTION_CONFIG
+        value: "true"
+      - key: ENABLE_REEL_PRODUCT_IMPORT
+        value: "true"
+      - key: REQUIRE_DATABASE
+        value: "true"
+      - key: REQUIRE_MEDIA_STORAGE
+        value: "true"
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_ADMIN_EXPIRES_IN
+        value: 24h
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 30d
+      - key: ALLOW_REFRESH_TOKEN_BODY
+        value: "false"
+      - key: RETURN_REFRESH_TOKEN_IN_BODY
+        value: "false"
+      - key: AUTH_COOKIE_SAME_SITE
+        value: none
+      - key: AUTH_COOKIE_SECURE
+        value: "true"
+      - key: PUBLIC_API_URL
+        value: https://jassi-general-store-backend-1.onrender.com
+      - key: CLIENT_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: ADMIN_PHONE_NUMBERS
+        sync: false
+      # Temporary team-demo login. Disable the owner switch before live use.
+      - key: OTP_MODE
+        value: demo
+      - key: DEMO_OTP
+        value: "123456"
+      - key: ALLOW_HOSTED_OWNER_DEMO
+        value: "false"
+      - key: OTP_EXPIRY_MINUTES
+        value: "5"
+      - key: OTP_MAX_ATTEMPTS
+        value: "5"
+      - key: OTP_RESEND_COOLDOWN_SECONDS
+        value: "60"
+      - key: SMS_PROVIDER
+        sync: false
+      # MSG91 and 2Factor setup: see SMS.md; add selected provider keys in Environment.
+      - key: SMS_ACCOUNT_SID
+        value: ""
+      - key: SMS_AUTH_TOKEN
+        value: ""
+      - key: SMS_SENDER_ID
+        value: ""
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_PUBLIC_URL
+        sync: false
+      - key: R2_FOLDER
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: CLOUDINARY_FOLDER
+        value: samira-products
