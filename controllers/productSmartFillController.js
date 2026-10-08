@@ -9,6 +9,8 @@ const { ApiError } = require('../utils/apiError');
 const { suggestionAttributes, automaticSizing } = require('../services/productSuggestionPolicy');
 
 const active = new Set();
+const REQUEST_WINDOW_MS = 60000;
+const REQUEST_LIMIT = 12;
 const clean = (value, max = 3000) => typeof value === 'string' ? value.trim().slice(0, max) : '';
 const factFields = { name: 'Name', category: 'Category', subCategory: 'Product type', fabric: 'Fabric', colors: 'Colours', occasion: 'Occasion', description: 'Description', shortDescription: 'Short description', highlights: 'Highlights', careInstructions: 'Care instructions' };
 function sourceText(body, categories, attributes) {
@@ -27,11 +29,11 @@ function sourceText(body, categories, attributes) {
   return [clean(body.notes, 7000), ...lines].filter(Boolean).join('\n').slice(0, 10000);
 }
 
-exports.limiter = rateLimit({ windowMs: 60000, max: 12, standardHeaders: true, legacyHeaders: false,
+exports.limiter = rateLimit({ windowMs: REQUEST_WINDOW_MS, max: REQUEST_LIMIT, standardHeaders: true, legacyHeaders: false,
   keyGenerator: req => String(req.user._id),
   message: { message: 'Smart Fill has received several requests. Please wait a minute before trying again.' },
 });
-exports.status = (_req, res) => res.json({ enabled: enabled(), notesSupported: true, maxPhotos: 6 });
+exports.status = (_req, res) => res.json({ enabled: enabled(), notesSupported: true, maxPhotos: 6, requestIntervalMs: Math.ceil(REQUEST_WINDOW_MS / REQUEST_LIMIT) + 100 });
 exports.fill = asyncHandler(async (req, res) => {
   if (req.body?.notes !== undefined && (typeof req.body.notes !== 'string' || req.body.notes.length > 7000)) throw new ApiError('VALIDATION_ERROR', 'Keep supplier notes under 7,000 characters.');
   const urls = req.body?.imageUrls ?? [];
@@ -71,7 +73,7 @@ exports.fill = asyncHandler(async (req, res) => {
     // provider responses are included, and nothing is saved or published here.
     const fields = ['name', 'category', 'subCategory', 'description', 'shortDescription', 'colors', 'tags', 'highlights', 'fabric', 'occasion', 'careInstructions', 'sizes', 'sizingMode', 'price', 'originalPrice', 'attributeValues'];
     const data = Object.fromEntries(fields.filter(field => suggestion[field] !== undefined).map(field => [field, suggestion[field]]));
-    res.json({ suggestion: data, fieldSources: suggestion.fieldSources || {}, mode: suggestion.contextStatus === 'completed' ? 'ai' : 'notes', warnings: [...new Set(warnings)] });
+    res.json({ suggestion: data, fieldSources: suggestion.fieldSources || {}, mode: suggestion.contextStatus === 'completed' ? 'ai' : 'notes', analysisStatus: suggestion.contextStatus, errorCode: suggestion.contextErrorCode || '', analysisError: suggestion.contextStatus === 'failed' ? suggestion.contextError : '', warnings: [...new Set(warnings)] });
   } catch (error) {
     if (signal.aborted && !controller.signal.aborted) throw new ApiError('SMART_FILL_TIMEOUT', 'Smart Fill took too long. Try again with fewer photos, or paste the product details.');
     if (!controller.signal.aborted) throw error;
