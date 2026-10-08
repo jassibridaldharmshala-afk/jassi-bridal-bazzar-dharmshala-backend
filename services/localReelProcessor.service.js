@@ -163,10 +163,11 @@ async function processReelLocally(job, { runId } = {}) {
 
     await updateProgress(job, runId, 'analyzing_frames', 58, 'Grouping products', `Found ${frames.length} possible photos. Grouping nearby product views.`);
     const categories = isVisionEnabled()
-      ? await Category.find({ isActive: { $ne: false } }).select('_id name').lean()
+      ? await Category.find({ isActive: { $ne: false }, isArchived: { $ne: true } }).select('_id name parent definitionKey attributeOverrides').lean()
       : [];
-    const attributes = isVisionEnabled() ? (await require('./masterConfigurationService').readConfiguration()).structure.attributes : [];
-    const context = isVisionEnabled() ? await analyzeProductContext({ videoFiles: [{ path: videoPath }], filePaths: frames.slice(0, 4).map((frame) => frame.path), directory: workspace, categories, attributes }) : null;
+    const structure = isVisionEnabled() ? (await require('./masterConfigurationService').readConfiguration(job.storeId)).structure : {};
+    const attributes = structure.attributes || [];
+    const context = isVisionEnabled() ? await analyzeProductContext({ videoFiles: [{ path: videoPath }], filePaths: frames.slice(0, 6).map((frame) => frame.path), directory: workspace, categories, attributes, structure }) : null;
     const singleProduct = context?.contextStatus === 'completed' && !context.multipleProducts && Boolean(context.name);
     const groups = singleProduct ? [frames.slice(0, 20)] : chunkFrames(frames);
     const smartDetails = [];
@@ -187,7 +188,7 @@ async function processReelLocally(job, { runId } = {}) {
         groupNumber,
         filePaths: groups[index].map((frame) => frame.path),
         videoFiles: [{ path: videoPath, startSeconds: Math.max(0, groups[index][0].timestampSeconds - 2), durationSeconds: Math.min(metadata.durationSeconds, groups[index].at(-1).timestampSeconds - groups[index][0].timestampSeconds + 5) }], directory: workspace, attributes,
-        categories,
+        categories, structure,
         subcategories: [],
       }));
     }

@@ -456,7 +456,7 @@ async function updateCandidate(req, res) {
     const draft = await ProductDraft.findById(candidate.productDraft);
     if (draft && draft.status !== 'published') {
       const overrides = pickAdminOverrides(body.adminOverrides || {});
-      for (const key of ['name', 'subCategory', 'fabric', 'description', 'sizeChart', 'sizeChartProfile', 'attributeValues']) if (overrides[key] !== undefined) draft[key] = overrides[key];
+      for (const key of ['name', 'subCategory', 'fabric', 'description', 'shortDescription', 'highlights', 'careInstructions', 'metaTitle', 'metaDescription', 'metaKeywords', 'sizeChart', 'sizeChartProfile', 'attributeValues']) if (overrides[key] !== undefined) draft[key] = overrides[key];
       if (overrides.category !== undefined) draft.category = (await resolveCategory(overrides.category))?._id;
       if (overrides.primaryColor !== undefined) draft.colors = listValue(overrides.primaryColor);
       if (overrides.occasion !== undefined) draft.occasion = listValue(overrides.occasion).join(', ');
@@ -516,6 +516,7 @@ async function analyzeCandidate(req, res, next) {
       sourceVideo: sourceJob.sourceVideo, sourceRange: candidate.sourceRange,
       categories,
       attributes: configuration.structure.attributes,
+      structure: configuration.structure,
     });
     // A failed refresh must never replace useful suggestions with "Product N".
     if (result.analysis.status === 'completed') {
@@ -747,7 +748,12 @@ async function createDraftForCandidate(job, candidate, userId) {
     occasion: listValue(overrides.occasion || suggestions.occasion).join(', '),
     tags,
     description: String(overrides.description || suggestions.description || suggestions.shortDescription || ''),
-    highlights: [],
+    highlights: listValue(overrides.highlights || suggestions.highlights),
+    shortDescription: String(overrides.shortDescription || suggestions.shortDescription || ''),
+    careInstructions: String(overrides.careInstructions || suggestions.careInstructions || ''),
+    metaTitle: String(overrides.metaTitle || suggestions.metaTitle || name).slice(0, 100),
+    metaDescription: String(overrides.metaDescription || suggestions.metaDescription || suggestions.shortDescription || '').slice(0, 300),
+    metaKeywords: String(overrides.metaKeywords || suggestions.metaKeywords || tags.join(', ')).slice(0, 1000),
     status: 'draft',
     createdBy: userId,
     sourceType: 'reel-import',
@@ -821,7 +827,7 @@ function pickSuggestions(value) {
 function pickAdminOverrides(value) {
   return pick(value, [
     'name', 'category', 'subCategory', 'primaryColor', 'colors', 'pattern', 'fabric', 'occasion',
-    'tags', 'description', 'price', 'originalPrice', 'sellingPrice', 'sizes', 'sizingMode', 'stock', 'primaryFrameId', 'sizeChart', 'sizeChartProfile', 'attributeValues',
+    'tags', 'description', 'shortDescription', 'highlights', 'careInstructions', 'metaTitle', 'metaDescription', 'metaKeywords', 'price', 'originalPrice', 'sellingPrice', 'sizes', 'sizingMode', 'stock', 'primaryFrameId', 'sizeChart', 'sizeChartProfile', 'attributeValues',
   ]);
 }
 

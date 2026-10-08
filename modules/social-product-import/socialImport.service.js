@@ -59,11 +59,11 @@ async function processImport(id) {
       if (!hashes.has(hash)) { hashes.add(hash); unique.push(file); }
     }
     await update({ status: 'analyzing', progress: 60, stage: context.enabled() ? 'Reading product details, video text and spoken information' : 'Filling details from the post' });
-    const categories = await Category.find({ ...(job.storeId ? { storeId: job.storeId } : {}), isActive: { $ne: false } }).select('_id name').limit(100).lean();
-    const configuration = await readConfiguration();
+    const categories = await Category.find({ ...(job.storeId ? { storeId: job.storeId } : {}), isActive: { $ne: false }, isArchived: { $ne: true } }).select('_id name parent definitionKey attributeOverrides').limit(100).lean();
+    const configuration = await readConfiguration(job.storeId);
     const suggestion = await context.analyzeProductContext({ caption: resolved.caption, title: resolved.title,
-      filePaths: unique.slice(0, 4).map((file) => file.path), videoFiles, directory, categories,
-      attributes: configuration.structure.attributes, signal: controller.signal });
+      filePaths: unique.slice(0, 6).map((file) => file.path), videoFiles, directory, categories,
+      attributes: configuration.structure.attributes, structure: configuration.structure, signal: controller.signal });
     if (suggestion.contextStatus === 'failed') warnings.push(suggestion.contextError || 'Video and photo understanding was unavailable. Available caption details are filled in; you can edit them below.');
     if (!context.enabled()) warnings.push('Caption details are filled automatically. Video speech and on-screen text need the optional AI connection.');
     if (suggestion.priceAmbiguous) warnings.push('The source contains an unclear price or several products. Enter the selling price for your selected product.');

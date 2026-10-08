@@ -25,8 +25,8 @@ beforeEach(async () => {
   await resetDatabase(); store = await ensureDefaultStore(); customer = await createCustomer(); admin = await createAdmin();
   product = await createProduct({ storeId: store._id, commerceMode: 'SALE_AND_RENTAL' });
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY } });
+  asset = await S.saveAsset(store, { productId: String(product._id), poolKey: 'outfit', code: 'OUTFIT-001', label: 'Outfit' });
   listing = await S.saveListing(store, { productId: String(product._id), title: 'Rental outfit', active: true, dailyRatePaise: 100000, depositPaise: 500000, requirements: [{ poolKey: 'outfit', label: 'Outfit', quantity: 1 }] });
-  asset = await S.saveAsset(store, { poolKey: 'outfit', code: 'OUTFIT-001', label: 'Outfit' });
 });
 async function policy(changes) { const current = await S.readConfiguration(store); return S.saveConfiguration(store, { ...current, policy: { ...current.policy, ...changes } }); }
 async function hold(extra = {}, counter = false) {
@@ -85,6 +85,7 @@ test('sale-only or scheduled products cannot be rented and captured money remain
   assert.equal((await S.catalogue(store)).rows.length, 0); await assert.rejects(() => hold(), /unavailable/);
 });
 test('new offers reject wrong product/size pieces and unsafe multi-component mappings', async () => {
+  asset = await S.saveAsset(store, { ...asset, size: 'M' });
   listing = await S.saveListing(store, { ...listing, size: 'M' });
   asset = await S.saveAsset(store, { ...asset, size: 'L' });
   await assert.rejects(() => hold(), /unavailable/);
@@ -94,7 +95,7 @@ test('new offers reject wrong product/size pieces and unsafe multi-component map
   await assert.rejects(() => S.saveListing(store, { ...listing, requirements: [{ poolKey: 'outfit', label: 'Outfit', quantity: 1 }, { poolKey: 'jewel', label: 'Necklace', quantity: 1 }] }), /every component/);
 });
 test('piece replacement enforces accepted mapping even if the offer has since changed', async () => {
-  listing = await S.saveListing(store, { ...listing, size: 'M' }); asset = await S.saveAsset(store, { ...asset, size: 'M' });
+  asset = await S.saveAsset(store, { ...asset, size: 'M' }); listing = await S.saveListing(store, { ...listing, size: 'M' });
   const wrong = await S.saveAsset(store, { productId: String(product._id), poolKey: 'outfit', size: 'L', code: 'OUTFIT-L', label: 'L outfit' });
   let b = await collect(await hold()); listing = await S.saveListing(store, { ...listing, size: 'L' });
   await assert.rejects(() => S.replacePiece(store, b._id, { revision: b.revision, operationId: op(), assetId: String(asset._id), replacementId: String(wrong._id), customerAcknowledged: true, note: 'Wrong size' }), /accepted product\/variant\/size/);
@@ -208,8 +209,8 @@ test('real multipart proof endpoint preserves fields and denies customer uploads
 });
 test('partial returns require evidence and acknowledgement for only the physically returned pieces', async () => {
   await policy({ requireConditionPhotos: true, requireCustomerAcknowledgement: true });
-  listing = await S.saveListing(store, { ...listing, requirements: [{ ...listing.requirements[0], quantity: 2 }] });
   const second = await S.saveAsset(store, { poolKey: 'outfit', code: 'OUTFIT-002', label: 'Second outfit' });
+  listing = await S.saveListing(store, { ...listing, requirements: [{ ...listing.requirements[0], quantity: 2 }] });
   let b = await ready(await collect(await hold()));
   await M.Booking.updateOne({ _id: b._id }, { $set: { 'schedule.pickupAt': new Date(Date.now() - 60000), 'schedule.returnDueAt': new Date(Date.now() + 2 * A.DAY) } }); b = S.present(await S.getBooking(store, b._id));
   b = (await upload(b)).booking; b = (await upload(b, 'HANDOVER', '#00ff00', second._id)).booking;

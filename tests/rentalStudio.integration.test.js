@@ -23,8 +23,8 @@ beforeEach(async () => {
   await resetDatabase(); store = await ensureDefaultStore(); admin = await createAdmin(); customer = await createCustomer();
   product = await createProduct({ storeId: store._id, commerceMode: 'SALE_AND_RENTAL' });
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY, measurementProfilesEnabled: true, tailoringEnabled: true, maintenanceTasksEnabled: true, dateFirstEnabled: true, refundDashboardEnabled: true, piecePerformanceEnabled: true, waitlistEnabled: true } });
+  asset = await S.saveAsset(store, { productId: String(product._id), poolKey: 'studio', code: 'STUDIO-001', label: 'Lehenga', costPaise: 300000 });
   listing = await S.saveListing(store, { productId: String(product._id), title: 'Studio lehenga', dailyRatePaise: 100000, depositPaise: 500000, active: true, requirements: [{ poolKey: 'studio', label: 'Lehenga', quantity: 1 }] });
-  asset = await S.saveAsset(store, { poolKey: 'studio', code: 'STUDIO-001', label: 'Lehenga', costPaise: 300000 });
 });
 async function hold(day = 7, user = customer.user) {
   const config = await S.readConfiguration(store), input = { ...dates(day), items: [{ listingId: String(listing._id), quantity: 1 }], attemptId: op(), policyRevision: config.revision, acceptTerms: true };
@@ -160,8 +160,8 @@ test('date-first availability redacts allocations, offers alternate dates and re
 
 test('matching alternatives retain public rate/deposit details when added to the rental bag', async () => {
   const alternateProduct = await createProduct({ storeId: store._id, commerceMode: 'SALE_AND_RENTAL', category: product.category });
+  await S.saveAsset(store, { productId: String(alternateProduct._id), poolKey: 'alternate', code: 'ALT-001', label: 'Dress' });
   const alternate = await S.saveListing(store, { productId: String(alternateProduct._id), title: 'Alternative outfit', dailyRatePaise: 150000, depositPaise: 400000, active: true, requirements: [{ poolKey: 'alternate', label: 'Dress', quantity: 1 }] });
-  await S.saveAsset(store, { poolKey: 'alternate', code: 'ALT-001', label: 'Dress' });
   await collect(await hold(3));
   const suggestions = await Available.alternatives(store, listing._id, dates(3));
   const match = suggestions.matches.find(row => String(row._id) === String(alternate._id));

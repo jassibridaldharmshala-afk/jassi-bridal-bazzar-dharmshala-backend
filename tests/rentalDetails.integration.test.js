@@ -18,8 +18,8 @@ beforeEach(async () => {
   await resetDatabase(); store = await ensureDefaultStore(); customer = await createCustomer(); admin = await createAdmin();
   const product = await createProduct({ storeId: store._id, commerceMode: 'SALE_AND_RENTAL' });
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY, deliveryModes: ['STORE_PICKUP', 'SELF_DELIVERY', 'COURIER'], tailoringEnabled: true } });
+  asset = await S.saveAsset(store, { productId: String(product._id), poolKey: 'outfit', code: 'LEHENGA-001', label: 'Lehenga' });
   listing = await S.saveListing(store, { productId: String(product._id), title: 'Lehenga', active: true, dailyRatePaise: 100000, depositPaise: 500000, requirements: [{ poolKey: 'outfit', label: 'Outfit', quantity: 1 }] });
-  asset = await S.saveAsset(store, { poolKey: 'outfit', code: 'LEHENGA-001', label: 'Lehenga' });
 });
 async function payload(extra = {}) {
   const key = new Date(Date.now() + 3 * A.DAY).toISOString().slice(0, 10), pickupAt = `${key}T10:00:00+05:30`;

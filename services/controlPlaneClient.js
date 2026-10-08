@@ -96,9 +96,16 @@ async function licenseStatus({ force = false } = {}) {
   const config = configuration();
   if (!config.managed) return { managed: false, source: 'unmanaged', status: 'ACTIVE', plan: 'SELF_HOSTED', features: [], limits: {}, appVersion: config.appVersion };
   const cached = await cachedEnvelope();
-  if (cached && !force) {
-    const payload = parseAndVerify(cached, config);
-    if (new Date(payload.validUntil).getTime() > Date.now()) return applyLocalExpiry({ managed: true, source: 'cache', ...payload });
+  let cachedPayload;
+  if (cached) {
+    try { cachedPayload = parseAndVerify(cached, config); }
+    catch (error) {
+      // A cache from a different installation must not prevent fresh validation.
+      if (error.errorCode !== 'UNAUTHORIZED') throw error;
+    }
+    if (cachedPayload && !force && new Date(cachedPayload.validUntil).getTime() > Date.now()) {
+      return applyLocalExpiry({ managed: true, source: 'cache', ...cachedPayload });
+    }
   }
   try {
     if (!refreshPromise) refreshPromise = (async () => {
@@ -110,9 +117,8 @@ async function licenseStatus({ force = false } = {}) {
     const payload = await refreshPromise;
     return applyLocalExpiry({ managed: true, source: 'platform', ...payload });
   } catch (error) {
-    if (cached) {
-      const payload = parseAndVerify(cached, config);
-      if (new Date(payload.graceUntil).getTime() > Date.now()) return applyLocalExpiry({ managed: true, source: 'offline-cache', platformReachable: false, ...payload });
+    if (cachedPayload && new Date(cachedPayload.graceUntil).getTime() > Date.now()) {
+      return applyLocalExpiry({ managed: true, source: 'offline-cache', platformReachable: false, ...cachedPayload });
     }
     throw error;
   }

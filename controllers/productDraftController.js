@@ -24,6 +24,7 @@ const { supportsTransactions, runInTransaction } = require('../utils/transaction
 const { runUploadRequest } = require('../services/uploadRetryService');
 const { storeFiles } = require('../services/mediaUploadService');
 const { createRecordOnce } = require('../services/recordCreationService');
+const { resolveDraftPhotoGroups } = require('../utils/draftPhotoGroups');
 
 const DRAFT_AUDIT_FIELDS = [
   'name', 'sku', 'category', 'sellingPrice', 'originalPrice', 'stock', 'status',
@@ -68,38 +69,41 @@ exports.bulkUpload = async (req, res, next) => {
       throw new ApiError('PERSISTENT_UPLOAD_STORAGE_REQUIRED', 'Draft images need Cloudflare R2 or Cloudinary in production.', { statusCode: 503 });
     }
     const result = await runUploadRequest(req, async context => {
+      const fields = context.fields || req.body || {};
+      const photoGroups = resolveDraftPhotoGroups(fields, context.resume ? context.storedFiles.length : req.files.length);
       const uploaded = context.resume ? context.storedFiles : await storeFiles(req, context, { folder: 'products' });
-      const groupMode = (context.fields || req.body)?.groupMode === 'single' ? 'single' : 'separate';
-      const groups = groupMode === 'single' ? [uploaded] : uploaded.map((file) => [file]);
-      const payloads = groups.map((files, index) => withDraftStore(req, {
-        ...(context.managed ? { _id: new mongoose.Types.ObjectId(require('crypto').createHash('sha256').update(`${context.id}:draft:${index}`).digest('hex').slice(0, 24)), uploadOperationId: context.id } : {}),
-        name: '',
-        slug: uniqueDraftSlug(files[0]?.originalName || `draft-${index + 1}`),
-        sku: `DRAFT-${Date.now()}-${String(index + 1).padStart(2, '0')}`,
-        image: files[0]?.url,
-        images: files.map((file, fileIndex) => ({ url: file.url, publicId: file.publicId, primary: fileIndex === 0 })),
-        videos: [],
-        category: undefined,
-        subCategory: '',
-        price: 0,
-        originalPrice: 0,
-        sellingPrice: 0,
-        stock: 0,
-        sizes: [],
-        sizingMode: 'auto',
-        sizeChartProfile: 'auto',
-        sizeChart: { unit: 'in', columns: [], rows: [] },
-        sizeFitNotes: '',
-        colors: [],
-        fabric: '',
-        occasion: '',
-        tags: [],
-        description: '',
-        highlights: [],
-        status: 'draft',
-        sourceType: 'manual',
-        createdBy: req.user?._id,
-      }));
+      const payloads = photoGroups.map((group, index) => {
+        const files = group.photoIndexes.map((photoIndex) => uploaded[photoIndex]);
+        return withDraftStore(req, {
+          ...(context.managed ? { _id: new mongoose.Types.ObjectId(require('crypto').createHash('sha256').update(`${context.id}:draft:${index}`).digest('hex').slice(0, 24)), uploadOperationId: context.id } : {}),
+          name: group.name,
+          slug: uniqueDraftSlug(group.name || files[0]?.originalName || `draft-${index + 1}`),
+          sku: `DRAFT-${Date.now()}-${String(index + 1).padStart(2, '0')}`,
+          image: files[0]?.url,
+          images: files.map((file, fileIndex) => ({ url: file.url, publicId: file.publicId, primary: fileIndex === 0 })),
+          videos: [],
+          category: undefined,
+          subCategory: '',
+          price: 0,
+          originalPrice: 0,
+          sellingPrice: 0,
+          stock: 0,
+          sizes: [],
+          sizingMode: 'auto',
+          sizeChartProfile: 'auto',
+          sizeChart: { unit: 'in', columns: [], rows: [] },
+          sizeFitNotes: '',
+          colors: [],
+          fabric: '',
+          occasion: '',
+          tags: [],
+          description: '',
+          highlights: [],
+          status: 'draft',
+          sourceType: 'manual',
+          createdBy: req.user?._id,
+        });
+      });
       const drafts = await runInTransaction(async session => {
         const rows = [];
         for (const payload of payloads) {
@@ -109,10 +113,10 @@ exports.bulkUpload = async (req, res, next) => {
         return rows;
       });
 
-      await Promise.all(drafts.map((draft) => logAudit({
+      await Promise.all(drafts.map((draft, index) => logAudit({
         req, action: 'PRODUCT_DRAFT_CREATED', entityType: 'ProductDraft', entityId: draft._id,
         after: auditSnapshot(draft, DRAFT_AUDIT_FIELDS),
-        summary: groupMode === 'single' ? `Created one draft from ${uploaded.length} photos` : 'Created product draft from bulk upload',
+        summary: `Created product draft from ${photoGroups[index].photoIndexes.length} photos`,
       })));
       return { success: true, message: 'Drafts created successfully', data: { drafts: drafts.map(formatDraft) } };
     }, { resume, replay: async saved => {
@@ -187,7 +191,7 @@ exports.listDrafts = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     data: formatted,
-    meta: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)), summary: { draft: draftCount, published: publishedCount, archived: archivedCount, ...readinessCounts } },
+    meta: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)), photoGrouping: { version: 1, maxPhotos: 30 }, summary: { draft: draftCount, published: publishedCount, archived: archivedCount, ...readinessCounts } },
   });
 });
 
@@ -427,6 +431,7 @@ exports.publishSelected = asyncHandler(async (req, res) => {
 });
 
 async function publishPreparedDraft(draft, prepared, { userId } = {}) {
+    await require('../services/productRentalPricing').prepare(draft.rentalPricing);
     const token = require('node:crypto').randomUUID();
     const baseRevision = Number(draft.revision || 0);
     // On replica sets the claim, product, inventory and publication state
@@ -474,6 +479,10 @@ async function publishPreparedDraft(draft, prepared, { userId } = {}) {
       catch (error) { if (session || error.code !== 11000) throw error; product = await Product.findOne({ sourceDraftId: draft._id }); if (!product) throw error; }
     }
     await recordOpeningInventory(product, { userId, reference: `Draft ${draft._id}`, reason: 'Draft opening inventory' }, session);
+    if (draft.rentalPricing) {
+      const store = await require('../models/Store').findById(draft.storeId).session(session);
+      await require('../services/productRentalPricing').save(store, product, draft.rentalPricing, session);
+    }
     if (session) await ProductDraft.updateOne({ _id: draft._id, publishingToken: token }, { $unset: { publishingToken: 1 } }, { session });
     draft.status = 'published';
     draft.publishedProductId = product._id;
@@ -523,6 +532,7 @@ function draftReadiness(data = {}) {
   else if (data.category?.isArchived) issues.push('Choose an active category');
   if (!images.length && !data.image) issues.push('Add at least one product photo');
   if (!Number.isFinite(price) || price <= 0) issues.push('Add a valid selling price');
+  if (data.commerceMode && data.commerceMode !== 'SALE_ONLY') { try { require('../services/productRentalPricing').values(data.rentalPricing); } catch (error) { issues.push(error.message); } }
   if (!Number.isFinite(originalPrice) || originalPrice < price) issues.push('MRP must be equal to or above the selling price');
   if (!Number.isSafeInteger(Number(data.stock)) || Number(data.stock) < 0) issues.push('Add a whole-number stock quantity');
   if (!issues.length) {
@@ -537,7 +547,7 @@ function draftReadiness(data = {}) {
   if (!String(data.sku || '').trim()) warnings.push('Add a SKU for easier inventory control');
   if (!(Number(data.shippingWeightKg) > 0)) warnings.push('Add packed weight for accurate shipping');
   if (!String(data.metaTitle || '').trim() || !String(data.metaDescription || '').trim()) warnings.push('Complete search preview details');
-  const requiredChecks = 6;
+  const requiredChecks = 6 + (data.commerceMode && data.commerceMode !== 'SALE_ONLY' ? 1 : 0);
   const completedRequired = Math.max(0, requiredChecks - issues.length);
   const score = Math.max(0, Math.min(100, Math.round((completedRequired / requiredChecks) * 80 + ((4 - Math.min(4, warnings.length)) / 4) * 20)));
   return { state: issues.length ? 'incomplete' : warnings.length ? 'review' : 'ready', score, issues: issues.slice(0, 8), warnings: warnings.slice(0, 8) };
@@ -658,6 +668,7 @@ function buildProductPayloadFromDraft(draft) {
   return normalizeProductSizing({
     ...(data.storeId ? { storeId: data.storeId } : {}),
     name: data.name,
+    commerceMode: data.commerceMode || 'SALE_ONLY',
     attributeValues: data.attributeValues,
     slug: data.slug || slugify(data.name || 'product'),
     sku: data.sku,
@@ -721,6 +732,7 @@ function buildProductPayloadFromDraft(draft) {
 }
 
 function validatePublishDraft(draft, prepared) {
+  if (draft.commerceMode && draft.commerceMode !== 'SALE_ONLY') { try { require('../services/productRentalPricing').values(draft.rentalPricing); } catch (error) { return `Draft "${draft.name}": ${error.message}`; } }
   if (!Number.isSafeInteger(draft.stock) || draft.stock < 0) return `Draft "${draft.name}" needs a whole-number stock quantity`;
   if (draft.sourceType === 'social-import' && (!Number.isFinite(draft.sellingPrice ?? draft.price) || (draft.sellingPrice ?? draft.price) <= 0)) return `Draft "${draft.name}" needs a valid selling price`;
   if (!draft?.name || String(draft.name).trim().length < 3) return `Draft "${draft?.slug || draft?._id}" needs a product name`;

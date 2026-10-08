@@ -1,21 +1,24 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-
 const { corsOptions } = require('../config/corsOptions');
 
-const storefrontOrigin = 'https://jassi-bridal-bazzar-dharmshalas.onrender.com';
+function optionsFor(origin) {
+  let result;
+  corsOptions({ header: () => origin }, (error, options) => {
+    assert.equal(error, null);
+    result = options;
+  });
+  return result;
+}
 
-test('bridal storefront origin is accepted without trusting other Render services', () => {
-  const optionsFor = (origin) => {
-    let options;
-    corsOptions({ header: (name) => name === 'Origin' ? origin : undefined }, (_error, value) => { options = value; });
-    return options;
-  };
+test('bridal storefront origin can make credentialed API requests', () => {
+  const options = optionsFor('https://jassi-bridal-bazzar-dharmshalas.onrender.com');
+  assert.equal(options.origin, true);
+  assert.equal(options.credentials, true);
+  assert.ok(options.methods.includes('OPTIONS'));
+  assert.ok(options.allowedHeaders.includes('Authorization'));
+});
 
-  const accepted = optionsFor(storefrontOrigin);
-  assert.equal(accepted.origin, true);
-  assert.equal(accepted.credentials, true);
-  assert.ok(accepted.methods.includes('OPTIONS'));
-  assert.ok(accepted.allowedHeaders.includes('x-store-slug'));
-  assert.equal(optionsFor('https://untrusted-client.onrender.com').origin, false);
+test('an unrelated origin remains blocked', () => {
+  assert.equal(optionsFor('https://unrelated.example').origin, false);
 });

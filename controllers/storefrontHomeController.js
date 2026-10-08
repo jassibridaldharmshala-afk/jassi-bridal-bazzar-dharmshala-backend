@@ -71,7 +71,7 @@ function homeProduct(product, req) {
   return Object.fromEntries([
     '_id', 'id', 'slug', 'name', 'category', 'subCategory', 'price', 'originalPrice', 'discountPercentage',
     'stock', 'lowStockAlert', 'sizes', 'colors', 'variants', 'sizingMode', 'images', 'primaryImage',
-    'rating', 'numReviews', 'isFeatured', 'isNewArrival', 'isBestSeller', 'showOnHomepage', 'showInTrending', 'commerceMode',
+    'rating', 'numReviews', 'isFeatured', 'isNewArrival', 'isBestSeller', 'showOnHomepage', 'showInTrending', 'commerceMode', 'rentalPreview',
   ].map((key) => {
     const field = key === 'images' && Array.isArray(value.images)
       ? value.images.slice(0, 1).map(publicImage)
@@ -216,7 +216,8 @@ exports.getMobileHome = asyncHandler(async (req, res) => {
   const populated = await settled('products.categories', () => Product.populate(uniqueRows, {
     path: 'category', select: 'name slug', options: { lean: true, maxTimeMS: HOME_QUERY_TIMEOUT_MS },
   }), uniqueRows, warnings);
-  const byId = new Map(populated.map(product => [productKey(product), homeProduct(product, req)]));
+  const rentalProducts = await settled('products.rentalPricing', () => require('../services/rentalProductPreview').enrich(populated.map(p => normalizeProductResponse(p, req)), req), populated, warnings);
+  const byId = new Map(rentalProducts.map(product => [productKey(product), homeProduct(product, req)]));
   rawCollections.recentlyViewed = settings?.recentlyViewedEnabled === false ? [] : recentIds.map((id) => byId.get(String(id))).filter(Boolean);
   for (const [section, ids] of Object.entries(configured.sectionIds)) {
     if (!ids.length) continue;

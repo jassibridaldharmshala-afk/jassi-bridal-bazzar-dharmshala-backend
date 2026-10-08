@@ -73,6 +73,8 @@ function validateDraftReview(body, job) {
   return {
     name, category: category || undefined, price, sellingPrice: price, originalPrice, stock,
     description: text('description', 6000), shortDescription: text('shortDescription', 240),
+    careInstructions: text('careInstructions', 1000),
+    metaTitle: text('metaTitle', 100), metaDescription: text('metaDescription', 300), metaKeywords: text('metaKeywords', 1000),
     subCategory: text('subCategory', 100), fabric: text('fabric', 120), occasion: text('occasion', 100),
     colors: list('colors'), tags: list('tags'), sizes: list('sizes'), highlights: list('highlights'),
     sizingMode: ['auto', 'sized', 'free-size'].includes(body.sizingMode) ? body.sizingMode : 'auto',

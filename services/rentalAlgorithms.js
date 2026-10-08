@@ -100,12 +100,17 @@ function overlaps(a, b) { return +a.blockedFrom < +b.blockedUntil && +b.blockedF
 function quoteFingerprint(storeId, data) {
   return crypto.createHash('sha256').update(JSON.stringify({ storeId: String(storeId), quote: data.quote, schedule: data.schedule, policyRevision: data.policyRevision })).digest('hex');
 }
+function advanceRules(input) {
+  const advanceMode = input.advanceMode || 'STORE';
+  if (!['STORE', 'PERCENT', 'FIXED'].includes(advanceMode)) invalid('Choose store default, percentage or fixed rental advance.');
+  return { advanceMode, ...(advanceMode === 'PERCENT' ? { advancePercent: integer(input.advancePercent, 'rental advance percentage', 1, 100) } : {}), ...(advanceMode === 'FIXED' ? { advanceAmountPaise: integer(input.advanceAmountPaise, 'rental advance amount', 1) } : {}) };
+}
 function listingRules(input) {
   const dailyRatePaise = integer(input.dailyRatePaise, 'daily rate', 1), depositPaise = integer(input.depositPaise, 'security deposit');
   if (input.packages !== undefined && (!Array.isArray(input.packages) || input.packages.some(p => !p || typeof p !== 'object'))) invalid('Use a valid list of rental packages.');
   const packages = (input.packages || []).map(p => ({ days: integer(p.days, 'package days', 1, 90), pricePaise: integer(p.pricePaise, 'package price', 1) }));
   if (packages.length > 10 || new Set(packages.map(p => p.days)).size !== packages.length) invalid('Use unique rental packages (maximum 10).');
-  return { dailyRatePaise, depositPaise, packages, cleaningFeePaise: integer(input.cleaningFeePaise || 0, 'cleaning fee'), alterationFeePaise: integer(input.alterationFeePaise || 0, 'alteration fee') };
+  return { dailyRatePaise, depositPaise, packages, cleaningFeePaise: integer(input.cleaningFeePaise || 0, 'cleaning fee'), alterationFeePaise: integer(input.alterationFeePaise || 0, 'alteration fee'), ...advanceRules(input) };
 }
 function quote(lines, dates, policy, deliveryMode) {
   if (!policy.deliveryModes.includes(deliveryMode)) invalid('This delivery method is unavailable.');
@@ -115,16 +120,22 @@ function quote(lines, dates, policy, deliveryMode) {
     const rentPaise = (pack ? pack.pricePaise : listing.dailyRatePaise * dates.days) * quantity;
     const depositPaise = listing.depositPaise * quantity;
     const feesPaise = (listing.cleaningFeePaise + listing.alterationFeePaise) * quantity;
-    return { listingId: String(listing._id), productId: String(listing.productId), title: listing.title, quantity, rentPaise, depositPaise, feesPaise, components: listing.components || (listing.requirements || []).map(r => ({ label: r.label, quantity: r.quantity * quantity })), rules: listingRules(listing) };
+    return { listingId: String(listing._id), productId: String(listing.productId), title: listing.title, quantity, rentPaise, depositPaise, feesPaise, ...(listing.fitting ? { fitting: { ...listing.fitting } } : {}), components: listing.components || (listing.requirements || []).map(r => ({ label: r.label, quantity: r.quantity * quantity })), rules: listingRules(listing) };
   });
   const rentalPaise = items.reduce((n, i) => n + i.rentPaise + i.feesPaise, 0) + (deliveryMode === 'STORE_PICKUP' ? 0 : policy.deliveryFeePaise + policy.returnFeePaise);
   const depositPaise = items.reduce((n, i) => n + i.depositPaise, 0);
-  const advanceRentPaise = policy.advanceMode === 'FIXED' ? Math.min(rentalPaise, policy.advanceAmountPaise) : Math.ceil(rentalPaise * policy.advancePercent / 100);
+  const hasOverrides = items.some(i => i.rules.advanceMode !== 'STORE');
+  const advanceFor = (amount, rules, quantity = 1) => rules.advanceMode === 'FIXED' ? Math.min(amount, rules.advanceAmountPaise * quantity) : Math.ceil(amount * rules.advancePercent / 100);
+  const deliveryPaise = rentalPaise - items.reduce((n, i) => n + i.rentPaise + i.feesPaise, 0);
+  const storePolicyPaise = deliveryPaise + items.filter(i => i.rules.advanceMode === 'STORE').reduce((n, i) => n + i.rentPaise + i.feesPaise, 0);
+  const advanceRentPaise = hasOverrides
+    ? items.filter(i => i.rules.advanceMode !== 'STORE').reduce((n, i) => n + advanceFor(i.rentPaise + i.feesPaise, i.rules, i.quantity), 0) + advanceFor(storePolicyPaise, policy)
+    : advanceFor(rentalPaise, policy);
   const depositDueNowPaise = policy.depositTiming === 'PICKUP' ? 0 : depositPaise;
   const totalPaise = rentalPaise + depositPaise;
   integer(totalPaise, 'booking total', 1, 100000000);
   const taxPaise = Math.round(rentalPaise * (policy.rentalTaxBasisPoints || 0) / (10000 + (policy.rentalTaxBasisPoints || 0)));
-  return { items, rentalPaise, depositPaise, totalPaise, advanceRentPaise, advanceMode: policy.advanceMode || 'PERCENT', depositTiming: policy.depositTiming || 'BOOKING', depositDueNowPaise, dueNowPaise: advanceRentPaise + depositDueNowPaise, remainingPaise: totalPaise - advanceRentPaise - depositDueNowPaise, tax: { basisPoints: policy.rentalTaxBasisPoints || 0, taxablePaise: rentalPaise - taxPaise, taxPaise, serviceCode: policy.rentalServiceCode || '', priceMode: 'INCLUSIVE' }, deliveryMode, deliveryFeePaise: deliveryMode === 'STORE_PICKUP' ? 0 : policy.deliveryFeePaise, returnFeePaise: deliveryMode === 'STORE_PICKUP' ? 0 : policy.returnFeePaise, currency: 'INR', pricesIncludeApplicableTaxes: true };
+  return { items, rentalPaise, depositPaise, totalPaise, advanceRentPaise, advanceMode: hasOverrides ? 'PER_ITEM' : policy.advanceMode || 'PERCENT', depositTiming: policy.depositTiming || 'BOOKING', depositDueNowPaise, dueNowPaise: advanceRentPaise + depositDueNowPaise, remainingPaise: totalPaise - advanceRentPaise - depositDueNowPaise, tax: { basisPoints: policy.rentalTaxBasisPoints || 0, taxablePaise: rentalPaise - taxPaise, taxPaise, serviceCode: policy.rentalServiceCode || '', priceMode: 'INCLUSIVE' }, deliveryMode, deliveryFeePaise: deliveryMode === 'STORE_PICKUP' ? 0 : policy.deliveryFeePaise, returnFeePaise: deliveryMode === 'STORE_PICKUP' ? 0 : policy.returnFeePaise, currency: 'INR', pricesIncludeApplicableTaxes: true };
 }
 function finances(booking) {
   const entries = booking.ledger || [];
@@ -153,4 +164,4 @@ function lateEstimate(booking, now = new Date()) {
   const late = Math.max(0, +now - +booking.schedule.returnDueAt - booking.policy.graceHours * HOUR);
   return Math.ceil(late / DAY) * booking.policy.lateFeePerDayPaise;
 }
-module.exports = { DAY, HOUR, MODES, DEFAULT_POLICY, integer, text, id, operation, date, localKey, slot, schedule, overlaps, quoteFingerprint, validatePolicy, listingRules, quote, finances, cancellationRent, paidRent, lateEstimate };
+module.exports = { DAY, HOUR, MODES, DEFAULT_POLICY, integer, text, id, operation, date, localKey, slot, schedule, overlaps, quoteFingerprint, validatePolicy, advanceRules, listingRules, quote, finances, cancellationRent, paidRent, lateEstimate };

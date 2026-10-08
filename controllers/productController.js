@@ -223,13 +223,13 @@ exports.getProducts = asyncHandler(async (req, res) => {
       Product.countDocuments(query),
       includeFacets ? buildPublicCatalogFacets(req, catalogConfiguration, configuredAttributes) : null,
     ]);
-    const response = buildPaginatedResponse(items.map((product) => normalizeProductResponse(product, req)), { page, limit, total });
+    const response = buildPaginatedResponse(await require('../services/rentalProductPreview').enrich(items.map((product) => normalizeProductResponse(product, req)), req), { page, limit, total });
     if (facets) response.facets = facets;
     if (req.query.includeSummary === 'true') response.summary = await getCatalogSummary(req);
     return res.json(response);
   }
   const products = await Product.find(query).populate('category').sort(sort);
-  res.json(products.map((product) => normalizeProductResponse(product, req)));
+  res.json(await require('../services/rentalProductPreview').enrich(products.map((product) => normalizeProductResponse(product, req)), req));
 });
 
 exports.checkDuplicates = asyncHandler(async (req, res) => {
@@ -481,13 +481,13 @@ exports.getProductBySlug = asyncHandler(async (req, res) => {
     }, scoped)).populate('category');
   }
   if (!product) return res.status(404).json({ message: 'Product not found' });
-  res.json(normalizeProductResponse(product, req));
+  res.json((await require('../services/rentalProductPreview').enrich([normalizeProductResponse(product, req)], req))[0]);
 });
 
 exports.getProductById = asyncHandler(async (req, res) => {
   const product = await Product.findOne(catalogQuery(req, { _id: req.params.id })).populate('category');
   if (!product) return res.status(404).json({ message: 'Product not found' });
-  res.json(normalizeProductResponse(product, req));
+  res.json({ ...normalizeProductResponse(product, req), rentalOffers: await require('../services/productRentalPricing').offers(product, req.store) });
 });
 
 exports.getQuickAddVisionStatus = async (_req, res) => {
@@ -496,10 +496,15 @@ exports.getQuickAddVisionStatus = async (_req, res) => {
 
 exports.analyzeQuickAdd = async (req, res) => {
   try {
+    const [categories, configuration] = await Promise.all([
+      Category.find(andFilter({ isActive: { $ne: false }, isArchived: { $ne: true } }, req.tenantFilter)).select('_id name parent definitionKey attributeOverrides').limit(100).lean(),
+      readConfiguration(req.store?._id),
+    ]);
     const result = await analyzeQuickAddImage({
       imageUrl: req.body?.imageUrl,
-      categories: Array.isArray(req.body?.categories) ? req.body.categories : [],
-      subcategories: Array.isArray(req.body?.subcategories) ? req.body.subcategories : [],
+      imageUrls: req.body?.imageUrls,
+      categories, structure: configuration.structure,
+      subcategories: categories.filter(item => item.parent).map(item => item.name),
     });
     res.json(result);
   } catch (error) {
@@ -508,6 +513,7 @@ exports.analyzeQuickAdd = async (req, res) => {
 };
 
 exports.createProduct = asyncHandler(async (req, res) => {
+  await require('../services/productRentalPricing').prepare(req.body?.rentalPricing);
   await require('../services/storefrontDiscoveryService').validateComplements(req, req.body || {});
   const basePayload = await applyProductStructure(withStoreId({ ...req.body, images: sanitizeProductImages(req.body.images) }, req));
   const categoryName = await getCategoryName(basePayload.category, req);
@@ -532,6 +538,7 @@ exports.createProduct = asyncHandler(async (req, res) => {
       : await Product.create(productData);
     try {
       await recordOpeningInventory(created, { userId: req.user?._id, reference: 'Product create' }, session);
+      await require('../services/productRentalPricing').save(req.store, created, req.body?.rentalPricing, session);
     } catch (ledgerError) {
       if (!session) await Product.deleteOne({ _id: created._id }).catch(() => null);
       throw ledgerError;
@@ -543,6 +550,7 @@ exports.createProduct = asyncHandler(async (req, res) => {
 });
 
 exports.updateProduct = asyncHandler(async (req, res) => {
+  await require('../services/productRentalPricing').prepare(req.body?.rentalPricing);
   const existingProduct = await Product.findOne(catalogQuery(req, { _id: req.params.id }));
   if (!existingProduct) return res.status(404).json({ message: 'Product not found' });
   assertStoreOwned(existingProduct, req);
@@ -587,6 +595,7 @@ exports.updateProduct = asyncHandler(async (req, res) => {
       { new: true, runValidators: true, session },
     );
     if (!saved) throw new ApiError('INVENTORY_CHANGED', 'Product or inventory changed while this update was being saved. Reload and try again.');
+    await require('../services/productRentalPricing').save(req.store, saved, req.body?.rentalPricing, session);
     const movements = inventoryMovementDrafts(existingProduct, saved, req);
     try {
       if (movements.length) await InventoryTransaction.insertMany(movements, session ? { session } : {});

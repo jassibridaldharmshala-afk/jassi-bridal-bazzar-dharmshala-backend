@@ -62,7 +62,7 @@ test('catalog Smart Fill validates requests before doing database or AI work', a
   const Category = require('../models/Category');
   const controller = require('../controllers/productSmartFillController');
   const lookup = t.mock.method(Category, 'find', () => { throw new Error('Must not query'); });
-  for (const body of [{ notes: {} }, { notes: 'a'.repeat(7001) }, { imageUrls: ['a', 'b', 'c', 'd'] }, { imageUrls: [null] }]) {
+  for (const body of [{ notes: {} }, { notes: 'a'.repeat(7001) }, { imageUrls: Array(7).fill('photo') }, { imageUrls: [null] }]) {
     let error; await controller.fill({ user: { _id: 'test' }, body }, {}, value => { error = value; });
     assert.equal(error.errorCode, 'VALIDATION_ERROR');
   }

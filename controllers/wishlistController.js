@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const User = require('../models/User');
-const { normalizeProductImages } = require('../utils/imageUtils');
+const { normalizeProductResponse } = require('./productController');
 const { andFilter } = require('../services/storeService');
 const { asyncHandler } = require('../middleware/validate');
 
@@ -17,17 +17,19 @@ async function resolveProducts(values, req) {
   const products = await Product.find(andFilter({
     $or: [{ _id: { $in: objectIds } }, { slug: { $in: slugs } }],
     isActive: { $ne: false }, isArchived: { $ne: true },
+    $and: [{ $or: [{ publishAt: null }, { publishAt: { $lte: new Date() } }] }],
   }, req.tenantFilter)).populate('category', 'name slug');
   const lookup = new Map();
   products.forEach(product => { lookup.set(String(product._id), product); lookup.set(product.slug, product); });
   const seen = new Set();
-  return ids.map(id => {
+  const rows = ids.map(id => {
     const product = lookup.get(id);
     const key = String(product?._id || id);
     if (seen.has(key)) return null;
     seen.add(key);
-    return product ? { ...normalizeProductImages(product, req), id: key } : unavailable(id);
+    return product ? { ...normalizeProductResponse(product, req), id: key } : unavailable(id);
   }).filter(Boolean);
+  return require('../services/rentalProductPreview').enrich(rows, req);
 }
 
 async function readWishlist(req) {

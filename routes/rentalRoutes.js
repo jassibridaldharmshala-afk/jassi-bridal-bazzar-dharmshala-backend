@@ -15,6 +15,8 @@ function customerRouter() {
   router.get('/availability/:id/alternatives', C.alternatives);
   router.get('/slots', C.slots);
   router.get('/products/:id', C.listings);
+  router.get('/calendar/:id', C.calendar);
+  router.post('/calendar', C.calendarSet);
   router.post('/quote', C.quote);
   router.use(protect);
   router.get('/waitlist', C.waitlist);
@@ -43,6 +45,10 @@ function staffRouter() {
   router.get('/slots', C.slots);
   router.get('/waitlist', C.waitlist);
   router.get('/tasks', C.staffPermission('inventory.read'), C.tasks);
+  router.get('/setup/:id', C.staffPermission('inventory.read'), C.setup);
+  router.get('/timeline', C.staffPermission('inventory.read'), C.timeline);
+  router.get('/daily-desk', C.dailyDesk);
+  router.post('/calendar', C.calendarSet);
   router.post('/tasks', C.staffPermission('inventory.write'), C.createTask);
   router.post('/tasks/:id', C.staffPermission('inventory.write'), C.updateTask);
   router.get('/refund-queue', C.staffPermission('returns.refund'), C.refundQueue);

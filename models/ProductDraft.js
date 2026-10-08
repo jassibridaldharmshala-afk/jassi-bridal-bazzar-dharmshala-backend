@@ -45,6 +45,8 @@ const productDraftSchema = new mongoose.Schema({
   gstRate: Number,
   hsnCode: String,
   barcode: String,
+  commerceMode: { type: String, enum: ['SALE_ONLY', 'RENTAL_ONLY', 'SALE_AND_RENTAL'], default: 'SALE_ONLY' },
+  rentalPricing: { type: mongoose.Schema.Types.Mixed, default: undefined },
   stock: Number,
   lowStockAlert: Number,
   reorderQuantity: Number,

@@ -9,6 +9,8 @@ const { validateObjectIdParam } = require('../middleware/validate');
 router.get('/', category.getCategories);
 
 router.use(protect, adminOnly);
+router.get('/bridal-setup', require('../controllers/bridalCatalogController').preview);
+router.post('/bridal-setup', require('../controllers/bridalCatalogController').apply);
 router.put('/reorder', category.reorderCategories);
 router.get('/:id/impact', validateObjectIdParam(), category.getCategoryImpact);
 router.post('/:id/reassign', validateObjectIdParam(), category.reassignCategory);

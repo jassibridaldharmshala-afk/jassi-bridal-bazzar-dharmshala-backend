@@ -5,14 +5,14 @@ const {
 } = require('./quickAddVision.service');
 const contextService = require('./productImportContext.service');
 
-async function analyzeStoredCandidate({ groupNumber, frames, sourceVideo, sourceRange, categories, attributes }) {
+async function analyzeStoredCandidate({ groupNumber, frames, sourceVideo, sourceRange, categories, attributes, structure }) {
   if (!isVisionEnabled()) return unavailableCandidateAnalysis(groupNumber);
   const fs = require('node:fs/promises'); const path = require('node:path'); const os = require('node:os');
   const root = path.resolve(os.tmpdir());
   const directory = await fs.mkdtemp(path.join(root, 'samira-context-'));
   try {
     const filePaths = [];
-    for (const [index, frame] of frames.slice(0, 4).entries()) {
+    for (const [index, frame] of frames.slice(0, 6).entries()) {
       const target = path.join(directory, `photo-${index}.jpg`);
       if (String(frame.url).startsWith('/uploads/')) {
         const uploads = path.resolve(__dirname, '../uploads'); const local = path.resolve(uploads, path.basename(frame.url));
@@ -37,7 +37,7 @@ async function analyzeStoredCandidate({ groupNumber, frames, sourceVideo, source
         videoFiles.push({ path: video, durationSeconds: 300 });
       } catch { /* Available photos can still supply context when an original was removed. */ }
     }
-    const context = await contextService.analyzeProductContext({ filePaths, videoFiles, directory, categories, attributes });
+    const context = await contextService.analyzeProductContext({ filePaths, videoFiles, directory, categories, attributes, structure });
     const result = toContextCandidateAnalysis(context, groupNumber, categories);
     if (!videoFiles.length && result.analysis.status === 'completed') result.analysis.error = 'The original video was unavailable. Suggestions use the saved photos only.';
     return result;
@@ -51,7 +51,7 @@ function toContextCandidateAnalysis(context, groupNumber, categories = []) {
     : unavailableCandidateAnalysis(groupNumber);
   const result = toCandidateAnalysis({ enabled: true, suggestion: { ...context, categoryId: context.category, categoryName: categories.find((item) => String(item._id) === context.category)?.name },
     analysis: { source: 'gemini-reel-context', model: context.contextModel, analyzedAt: new Date() } }, groupNumber);
-  for (const key of ['price', 'originalPrice', 'sizes', 'sizeChart', 'attributeValues', 'fieldSources', 'multipleProducts', 'priceAmbiguous']) if (context[key] !== undefined) result.suggestions[key] = context[key];
+  for (const key of ['price', 'originalPrice', 'sizes', 'sizeChart', 'attributeValues', 'fieldSources', 'multipleProducts', 'priceAmbiguous', 'highlights', 'careInstructions']) if (context[key] !== undefined) result.suggestions[key] = context[key];
   return result;
 }
 
@@ -132,7 +132,13 @@ function toCandidateAnalysis(result, groupNumber) {
       tags: tags.length ? [...new Set([...tags, 'reel-import'])].slice(0, 8) : ['reel-import'],
       altText: clean(suggestion.shortDescription || suggestion.name, 200),
       shortDescription: clean(suggestion.shortDescription, 200),
-      description: clean(suggestion.description, 800),
+      description: clean(suggestion.description, 3000),
+      highlights: cleanList(suggestion.highlights, 10),
+      careInstructions: clean(suggestion.careInstructions, 1000),
+      metaTitle: clean(suggestion.metaTitle || suggestion.name, 60),
+      metaDescription: clean(suggestion.metaDescription || suggestion.shortDescription || suggestion.description, 160),
+      metaKeywords: clean(suggestion.metaKeywords || tags.join(', '), 1000),
+      attributeValues: suggestion.attributeValues || {},
       sizingMode: ['sized', 'free-size'].includes(suggestion.sizingMode) ? suggestion.sizingMode : 'confirm',
     },
     confidence: {
@@ -154,11 +160,11 @@ function toCandidateAnalysis(result, groupNumber) {
   };
 }
 
-async function analyzeCandidateFiles({ groupNumber, filePaths, categories, subcategories, videoFiles, directory, attributes, signal }) {
+async function analyzeCandidateFiles({ groupNumber, filePaths, categories, subcategories, videoFiles, directory, attributes, structure, signal }) {
   if (!isVisionEnabled()) return unavailableCandidateAnalysis(groupNumber);
   try {
-    if (videoFiles?.length) return toContextCandidateAnalysis(await contextService.analyzeProductContext({ filePaths, videoFiles, directory, categories, attributes, signal }), groupNumber, categories);
-    const result = await analyzeReelCandidateFiles({ filePaths, categories, subcategories });
+    if (videoFiles?.length) return toContextCandidateAnalysis(await contextService.analyzeProductContext({ filePaths, videoFiles, directory, categories, attributes, structure, signal }), groupNumber, categories);
+    const result = await analyzeReelCandidateFiles({ filePaths, categories, subcategories, attributes, structure });
     return toCandidateAnalysis(result, groupNumber);
   } catch (error) {
     return failedCandidateAnalysis(groupNumber, error);

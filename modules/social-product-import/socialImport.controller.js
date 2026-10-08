@@ -118,7 +118,7 @@ async function reviewView(job, suppliedDraft) {
     if (!imported) { imported = { id: 'draft-' + crypto.createHash('sha256').update(image.url).digest('hex').slice(0, 20), url: image.url, publicId: image.publicId, kind: 'photo' }; data.images.push(imported); }
     return { ...imported, primary: image.primary, viewType: image.sourceFrame?.viewType || imported.viewType };
   });
-  data.savedReview = Object.fromEntries(['name', 'category', 'subCategory', 'price', 'originalPrice', 'stock', 'description', 'shortDescription', 'colors', 'sizes', 'fabric', 'occasion', 'tags', 'highlights', 'sizingMode', 'sizeChart', 'sizeChartProfile', 'attributeValues'].map((key) => [key, value[key]]));
+  data.savedReview = Object.fromEntries(['name', 'category', 'subCategory', 'price', 'originalPrice', 'stock', 'description', 'shortDescription', 'colors', 'sizes', 'fabric', 'occasion', 'tags', 'highlights', 'careInstructions', 'metaTitle', 'metaDescription', 'metaKeywords', 'sizingMode', 'sizeChart', 'sizeChartProfile', 'attributeValues'].map((key) => [key, value[key]]));
   data.savedReview.category = String(value.category?._id || value.category || '');
   data.savedReview.price = value.sellingPrice ?? value.price;
   data.savedReview.imageIds = selected.map((image) => image.id);

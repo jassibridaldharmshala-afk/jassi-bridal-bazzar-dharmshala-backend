@@ -1,0 +1,136 @@
+const { test, before, after, beforeEach, mock } = require('node:test');
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const { startTestEnvironment, stopTestEnvironment, resetDatabase, request } = require('./helpers');
+const { createCustomer, createAdmin, createProduct } = require('./factories');
+const { ensureDefaultStore } = require('../services/storeService');
+const M = require('../models/Rental');
+const Store = require('../models/Store');
+const S = require('../services/rentalService');
+const A = require('../services/rentalAlgorithms');
+const O = require('../services/rentalOperationsService');
+const C = require('../services/rentalCalendarService');
+const Setup = require('../services/rentalSetupService');
+const op = () => 'operations_' + crypto.randomUUID();
+let store, admin, customer, product, listing, asset;
+const dates = () => { const day = A.localKey(new Date(Date.now() + 5 * A.DAY), 'Asia/Kolkata'); return { pickupAt: `${day}T10:00:00+05:30`, returnDueAt: `${new Date(Date.parse(`${day}T12:00Z`) + 2 * A.DAY).toISOString().slice(0, 10)}T10:00:00+05:30` }; };
+before(async () => { mock.method(require('../services/controlPlaneClient'), 'licenseStatus', async () => ({ managed: false, status: 'ACTIVE' })); await startTestEnvironment(); });
+after(async () => { await stopTestEnvironment(); mock.restoreAll(); });
+beforeEach(async () => {
+  await resetDatabase(); store = await ensureDefaultStore(); admin = await createAdmin(); customer = await createCustomer();
+  product = await createProduct({ storeId: store._id, sku: op(), commerceMode: 'SALE_AND_RENTAL', sizingMode: 'free-size', sizes: [], isFeatured: true, showOnHomepage: true });
+  await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY } });
+  asset = await S.saveAsset(store, { productId: String(product._id), poolKey: 'outfit', code: 'OUTFIT-01', label: 'Bridal outfit' });
+  listing = await S.saveListing(store, { productId: String(product._id), title: 'Bridal outfit', active: true, dailyRatePaise: 100000, depositPaise: 200000, fitting: { adjustable: true, alterationsAvailable: true, instructions: 'Fitting appointment recommended' }, requirements: [{ poolKey: 'outfit', label: 'Outfit', quantity: 1 }] });
+});
+async function hold(items = [{ listingId: String(listing._id), quantity: 1 }]) {
+  const input = { ...dates(), items, attemptId: op(), acceptTerms: true, policyRevision: 1 };
+  const quote = await S.publicQuote(store, input);
+  return S.hold(store, { ...input, quoteFingerprint: quote.quoteFingerprint }, customer.user);
+}
+test('activation is blocked until matching real pieces exist; setup is scoped and fitting stays public', async () => {
+  const paused = await S.saveListing(store, { ...listing, _id: undefined, active: false, requirements: [{ poolKey: 'empty-pool', label: 'Extra outfit', quantity: 1 }] });
+  const rejected = await request('/api/admin/rentals/listings', { method: 'POST', token: admin.token, body: { ...paused, active: true } });
+  assert.equal(rejected.status, 400); assert.match(rejected.data.message, /Actual matching pieces/);
+  const another = await createProduct({ storeId: store._id, sku: op(), commerceMode: 'SALE_AND_RENTAL' });
+  await S.saveAsset(store, { productId: String(another._id), poolKey: 'empty-pool', code: 'WRONG-01', label: 'Wrong product' });
+  assert.equal((await Setup.detail(store, paused._id)).ready, false);
+  await S.saveAsset(store, { productId: String(product._id), poolKey: 'empty-pool', code: 'EXTRA-01', label: 'Correct product' });
+  const ready = await request(`/api/admin/rentals/setup/${paused._id}`, { token: admin.token });
+  assert.equal(ready.status, 200); assert.equal(ready.data.ready, true); assert.equal(ready.data.components[0].configured, 1);
+  const active = await S.saveListing(store, { ...paused, active: true }); assert.equal(active.active, true);
+  const publicData = await request(`/api/rentals/products/${product._id}`); assert.equal(publicData.data.listings[0].fitting.adjustable, true);
+  const other = await Store.create({ name: 'Another shop', slug: op().toLowerCase() });
+  await assert.rejects(() => Setup.detail(other, listing._id), /not found/);
+  const denied = await request(`/api/admin/rentals/setup/${listing._id}`, { token: customer.token }); assert.equal(denied.status, 403);
+});
+test('combined calendar checks all items and cannot reuse the same physical piece for two offers', async () => {
+  const alternate = await S.saveListing(store, { ...listing, _id: undefined, title: 'Same piece, another offer' });
+  const query = { month: dates().pickupAt.slice(0, 7), days: 2 };
+  const single = await C.calendar(store, listing._id, query);
+  assert.equal(single.rows.find(r => r.date === dates().pickupAt.slice(0, 10)).status, 'AVAILABLE');
+  const combined = await request('/api/rentals/calendar', { method: 'POST', body: { ...query, items: [{ listingId: String(listing._id), quantity: 1 }, { listingId: String(alternate._id), quantity: 1 }] } });
+  assert.equal(combined.status, 200); assert.equal(combined.data.rows.find(r => r.date === dates().pickupAt.slice(0, 10)).status, 'UNAVAILABLE');
+  await S.saveAsset(store, { productId: String(product._id), poolKey: 'outfit', code: 'OUTFIT-02', label: 'Second outfit' });
+  const both = await C.calendarSet(store, { ...query, items: [{ listingId: String(listing._id), quantity: 1 }, { listingId: String(alternate._id), quantity: 1 }] });
+  assert.equal(both.rows.find(r => r.date === dates().pickupAt.slice(0, 10)).status, 'AVAILABLE');
+  assert.equal(both.rows.find(r => r.date === dates().pickupAt.slice(0, 10)).rentalPaise, 400000);
+});
+test('combined calendar handles an accessory conflict, expiry, invalid selections and customer privacy', async () => {
+  const jewellery = await createProduct({ storeId: store._id, sku: op(), commerceMode: 'RENTAL_ONLY' });
+  await S.saveAsset(store, { productId: String(jewellery._id), poolKey: 'jewellery', code: 'JEWEL-01', label: 'Jewellery' });
+  const offer = await S.saveListing(store, { ...listing, _id: undefined, productId: String(jewellery._id), title: 'Jewellery', requirements: [{ poolKey: 'jewellery', label: 'Jewellery', quantity: 1 }] });
+  const b = await hold([{ listingId: String(offer._id), quantity: 1 }]);
+  const query = { month: dates().pickupAt.slice(0, 7), days: 2, items: [{ listingId: String(listing._id), quantity: 1 }, { listingId: String(offer._id), quantity: 1 }] };
+  const blocked = await C.calendarSet(store, query); assert.equal(blocked.rows.find(r => r.date === dates().pickupAt.slice(0, 10)).status, 'UNAVAILABLE');
+  for (const secret of [String(b._id), b.number, customer.user.phone, 'assetId', 'allocations']) assert.equal(JSON.stringify(blocked).includes(secret), false);
+  await M.Reservation.updateMany({ bookingId: b._id }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+  assert.equal((await C.calendarSet(store, query)).rows.find(r => r.date === dates().pickupAt.slice(0, 10)).status, 'AVAILABLE');
+  await assert.rejects(() => C.calendarSet(store, { ...query, items: [query.items[0], query.items[0]] }), /Combine quantities/);
+  await assert.rejects(() => C.calendarSet(store, { ...query, items: [{ ...query.items[0], quantity: 0 }] }), /quantity/);
+  await assert.rejects(() => C.calendarSet(store, { ...query, items: new Array(11).fill(query.items[0]) }), /1–10/);
+});
+test('booking desk searches name/mobile/number and computes balance/refund filters before pagination', async () => {
+  const held = await hold(), base = (await M.Booking.findById(held._id)).toObject(); delete base._id;
+  await M.Booking.deleteMany({ storeId: store._id });
+  for (let i = 0; i < 34; i++) await M.Booking.create({ ...base, number: `DESK-${i}`, attemptId: op(), status: 'CONFIRMED', customer: { name: i === 33 ? 'Unique Bride' : 'Bride', phone: i === 33 ? '7831880907' : '9876543210' }, ledger: i < 32 ? [{ operationId: op(), kind: 'COLLECTION', amountPaise: base.quote.totalPaise }] : [] });
+  assert.equal((await S.listBookings(store, { search: 'Unique Bride' })).total, 1);
+  assert.equal((await S.listBookings(store, { search: '7831880907' })).rows[0].number, 'DESK-33');
+  assert.equal((await S.listBookings(store, { search: 'DESK-33' })).total, 1);
+  const pending = await S.listBookings(store, { view: 'balance' }); assert.equal(pending.total, 2); assert.equal(pending.rows.length, 2);
+  await M.Booking.updateOne({ number: 'DESK-0', storeId: store._id }, { $set: { status: 'RETURNED' } });
+  assert.equal((await S.listBookings(store, { view: 'refunds' })).total, 1);
+  await M.Booking.updateOne({ number: 'DESK-0', storeId: store._id }, { $push: { ledger: { operationId: op(), kind: 'REFUND', amountPaise: base.quote.depositPaise, status: 'PENDING' } } });
+  assert.equal((await S.listBookings(store, { view: 'refunds' })).total, 0);
+  const other = await createCustomer(); assert.equal((await S.listBookings(store, { search: 'Bride' }, other.user._id)).total, 0);
+  assert.equal((await S.listBookings(store, { search: '.*' })).total, 0); // literal search, not regex input
+});
+test('daily desk uses shop timezone, real pickup/return states and reports invalid dates cleanly', async () => {
+  const b = await hold(), day = A.localKey(new Date(), 'Asia/Kolkata');
+  const at = `${day}T10:00:00+05:30`;
+  await M.Booking.updateOne({ _id: b._id }, { $set: { status: 'READY', 'schedule.pickupAt': new Date(at) } });
+  let desk = await O.dailyDesk(store, { day }); assert.equal(desk.counts.pickups, 1); assert.equal(desk.counts.returns, 0);
+  await M.Booking.updateOne({ _id: b._id }, { $set: { status: 'OUT', 'schedule.returnDueAt': new Date(at) } });
+  desk = await O.dailyDesk(store, { day }); assert.equal(desk.counts.pickups, 0); assert.equal(desk.counts.returns, 1);
+  await assert.rejects(() => O.dailyDesk(store, { day: '2026-99-90' }), /valid operations date/);
+  const api = await request(`/api/admin/rentals/daily-desk?day=${day}`, { token: admin.token }); assert.equal(api.status, 200);
+  const denied = await request('/api/admin/rentals/daily-desk', { token: customer.token }); assert.equal(denied.status, 403);
+});
+test('piece timeline includes buffers, workshop overdue blocks, expiry and enforces store/staff scope', async () => {
+  const b = await hold(), start = dates().pickupAt.slice(0, 10);
+  let data = await O.timeline(store, { start, days: 7 });
+  assert.ok(data.rows[0].segments.some(s => s.kind === 'HELD' && String(s.bookingId) === String(b._id)));
+  assert.ok(data.rows[0].segments.some(s => s.kind === 'CLEANING_BUFFER'));
+  assert.equal(JSON.stringify(data).includes(customer.user.phone), false);
+  await M.Reservation.updateMany({ bookingId: b._id }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+  data = await O.timeline(store, { start }); assert.equal(data.rows[0].segments.length, 0);
+  await M.Task.create({ storeId: store._id, assetId: asset._id, operationId: op(), type: 'CLEANING', status: 'OPEN', dueAt: new Date(Date.now() - A.HOUR) });
+  data = await O.timeline(store, { start }); assert.ok(data.rows[0].segments.some(s => s.kind === 'OVERDUE_TASK'));
+  const other = await Store.create({ name: 'Other shop', slug: op().toLowerCase() }); assert.equal((await O.timeline(other)).total, 0);
+  const denied = await request('/api/admin/rentals/timeline', { token: customer.token }); assert.equal(denied.status, 403);
+  const allowed = await request('/api/admin/rentals/timeline', { token: admin.token }); assert.equal(allowed.status, 200);
+});
+test('catalogue and composed home responses show the same rental price/deposit and fitting', async () => {
+  await S.saveListing(store, { ...listing, _id: undefined, title: 'Premium offer', dailyRatePaise: 250000, depositPaise: 100000 });
+  const response = await request('/api/products'); assert.equal(response.status, 200);
+  const row = response.data.find(p => String(p._id) === String(product._id));
+  assert.equal(row.price, 1000); assert.equal(row.rentalPreview.dailyRatePaise, 100000); assert.equal(row.rentalPreview.depositPaise, 200000); assert.equal(row.rentalPreview.fitting.adjustable, true);
+  const wishlist = await request('/api/wishlist/resolve', { method: 'POST', body: { ids: [String(product._id)] } });
+  assert.equal(wishlist.status, 200); assert.equal(wishlist.data[0].rentalPreview.dailyRatePaise, 100000);
+  const home = await request('/api/storefront/home?format=compact'); assert.equal(home.status, 200);
+  const card = home.data.products.find(p => String(p._id) === String(product._id)); assert.equal(card.rentalPreview.dailyRatePaise, 100000);
+  const privateData = await request(`/api/admin/products/${product._id}`, { token: admin.token }); assert.equal(privateData.data.rentalOffers[0].fitting.alterationsAvailable, true);
+});
+test('fitting changes require a fresh quote and accepted fitting stays with the booking', async () => {
+  const input = { ...dates(), items: [{ listingId: String(listing._id), quantity: 1 }], attemptId: op(), acceptTerms: true, policyRevision: 1 };
+  const original = await S.publicQuote(store, input);
+  assert.equal(original.quote.items[0].fitting.adjustable, true);
+  listing = await S.saveListing(store, { ...listing, fitting: { adjustable: false, alterationsAvailable: true, instructions: 'Confirm blouse alteration' } });
+  await assert.rejects(() => S.hold(store, { ...input, quoteFingerprint: original.quoteFingerprint }, customer.user), e => e.errorCode === 'RENTAL_QUOTE_CHANGED');
+  const latest = await S.publicQuote(store, input);
+  const booking = await S.hold(store, { ...input, quoteFingerprint: latest.quoteFingerprint }, customer.user);
+  await S.saveListing(store, { ...listing, fitting: { adjustable: true, alterationsAvailable: false, instructions: 'New fitting policy' } });
+  assert.equal((await S.getBooking(store, booking._id)).quote.items[0].fitting.instructions, 'Confirm blouse alteration');
+  const config = await S.readConfiguration(store); await S.saveConfiguration(store, { ...config, mode: 'SALE_ONLY' });
+  await assert.rejects(() => S.saveListing(store, { ...listing, _id: undefined, active: true }), /Enable shop rental mode/);
+});

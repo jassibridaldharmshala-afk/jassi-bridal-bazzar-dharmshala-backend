@@ -1,6 +1,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const A = require('../services/rentalAlgorithms');
+test('per-offer advance stays separate from deposit and applies shop fixed advance once to the remaining cart', () => {
+  const base = { _id: 'a', productId: 'p', title: 'Item', dailyRatePaise: 10000, depositPaise: 50000, cleaningFeePaise: 0, alterationFeePaise: 0 };
+  const policy = A.validatePolicy({ advanceMode: 'FIXED', advanceAmountPaise: 5000, deliveryModes: ['COURIER'], deliveryFeePaise: 1000, returnFeePaise: 1000 });
+  const result = A.quote([{ listing: { ...base, advanceMode: 'FIXED', advanceAmountPaise: 3000 }, quantity: 2 }, { listing: { ...base, _id: 'b' }, quantity: 1 }, { listing: { ...base, _id: 'c' }, quantity: 1 }], { days: 2 }, policy, 'COURIER');
+  assert.equal(result.rentalPaise, 82000); assert.equal(result.advanceRentPaise, 11000); assert.equal(result.depositPaise, 200000); assert.equal(result.dueNowPaise, 211000); assert.equal(result.advanceMode, 'PER_ITEM');
+  const tiny = A.quote([{ listing: { ...base, dailyRatePaise: 1, advanceMode: 'PERCENT', advancePercent: 1 }, quantity: 1 }], { days: 1 }, A.validatePolicy({ depositTiming: 'PICKUP' }), 'STORE_PICKUP');
+  assert.equal(tiny.advanceRentPaise, 1); assert.equal(tiny.dueNowPaise, 1);
+});
 test('new rental policies cannot disable booking advance, and legacy accepted policies remain readable', () => {
   for (const advancePercent of [0, -1, 101, '', '30']) assert.throws(() => A.validatePolicy({ advancePercent }));
   assert.throws(() => A.validatePolicy({ advanceMode: 'FIXED', advanceAmountPaise: 0 }));

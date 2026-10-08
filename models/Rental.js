@@ -15,11 +15,13 @@ const Listing = define('RentalListing', {
   title: { type: String, required: true, maxlength: 200 }, active: { type: Boolean, default: true },
   variantId: { type: String, default: '', maxlength: 120 }, size: { type: String, default: '', maxlength: 80 }, colour: { type: String, default: '', maxlength: 80 },
   dailyRatePaise: { type: Number, required: true }, depositPaise: { type: Number, default: 0 },
+  advanceMode: { type: String, enum: ['STORE', 'PERCENT', 'FIXED'], default: 'STORE' }, advancePercent: Number, advanceAmountPaise: Number,
   cleaningFeePaise: { type: Number, default: 0 }, alterationFeePaise: { type: Number, default: 0 }, packages: [{ _id: false, days: Number, pricePaise: Number }],
   // Each group is a component inventory pool. One asset from every group per set is required.
   requirements: [{ _id: false, poolKey: String, label: String, quantity: { type: Number, default: 1 }, productId: Schema.Types.ObjectId, variantId: String, size: String, colour: String }],
   matchingVersion: { type: Number, default: 1 },
   notes: { type: String, maxlength: 2000 }, revision: { type: Number, default: 0 },
+  fitting: { type: Schema.Types.Mixed, default: undefined },
 }, [[{ storeId: 1, productId: 1, active: 1 }, {}]]);
 const Asset = define('RentalAsset', {
   productId: { type: Schema.Types.ObjectId, ref: 'Product' }, variantId: String, size: String, colour: String,

@@ -95,7 +95,8 @@ async function saveListing(store, input, actorId) {
   const cleaned = requirements.map(r => { if (!r || typeof r !== 'object') fail('Component inventory pool is invalid.', 'VALIDATION_ERROR'); return { poolKey: A.text(r.poolKey, 80), label: A.text(r.label, 100), quantity: A.integer(r.quantity, 'component quantity', 1, 10) }; });
   if (cleaned.some(r => !/^[a-z0-9_-]{2,80}$/.test(r.poolKey) || !r.label) || new Set(cleaned.map(r => r.poolKey)).size !== cleaned.length) fail('Use unique lowercase inventory pool keys and labels.', 'VALIDATION_ERROR');
   if (typeof input.active !== 'boolean') fail('Choose whether the listing is active.', 'VALIDATION_ERROR');
-  return transaction(store, async session => {
+  return transaction(store, async (session, configuration) => {
+    if (input.active && configuration.mode === 'SALE_ONLY') fail('Enable shop rental mode before activating an offer.', 'VALIDATION_ERROR');
     const product = await Product.findOne(productFilter(store, input.productId)).session(session);
     if (!product || product.isArchived) fail('Choose an existing product in this store.', 'NOT_FOUND');
     if (input.active && product.commerceMode === 'SALE_ONLY') fail('Enable rental availability on this product before activating its rental listing.', 'VALIDATION_ERROR');
@@ -120,6 +121,7 @@ async function saveListing(store, input, actorId) {
       }
     }
     values.requirements = cleaned;
+    if (input.fitting !== undefined) values.fitting = require('./rentalFitting').fitting(input.fitting);
     if (values.variantId && !product.variants.some(v => String(v._id) === values.variantId && v.isActive !== false)) fail('Choose an active product variant.', 'VALIDATION_ERROR');
     let listing;
     if (input._id) {
@@ -129,6 +131,12 @@ async function saveListing(store, input, actorId) {
       if (String(listing.productId) !== String(product._id)) fail('An existing listing cannot be moved to another product.', 'VALIDATION_ERROR');
       Object.assign(listing, values); listing.revision += 1;
     } else listing = new M.Listing({ storeId: store._id, ...values });
+    // Only configured inventory may be advertised as a new active offer. This is
+    // inside the availability fence, so simultaneous piece edits cannot race it.
+    if (listing.active) {
+      const readiness = await require('./rentalSetupService').readiness(store, listing.toObject(), session);
+      if (!readiness.ready) fail('Complete rental setup before activation: ' + readiness.checks.filter(c => !c.ready).map(c => c.label).join('; '), 'VALIDATION_ERROR');
+    }
     await listing.save({ session });
     return listing.toObject();
   });
@@ -765,7 +773,7 @@ async function publicListings(store, productId) {
   const product = await Product.findOne({ $and: [productFilter(store, productId), inventoryRules.publishedRentalFilter()] }).select('_id').lean();
   if (!product) fail('Product not found.', 'NOT_FOUND');
   const rows = await M.Listing.find({ storeId: store._id, productId: product._id, active: true }).limit(50).lean();
-  return { enabled: true, timezone: config.policy.timezone, policy: config.policy, policyRevision: config.revision, listings: rows.map(({ _id, title, size, colour, dailyRatePaise, depositPaise, packages, cleaningFeePaise, alterationFeePaise, notes }) => ({ _id, title, size, colour, dailyRatePaise, depositPaise, packages, cleaningFeePaise, alterationFeePaise, notes })) };
+  return { enabled: true, timezone: config.policy.timezone, policy: config.policy, policyRevision: config.revision, listings: rows.map(({ _id, title, size, colour, dailyRatePaise, depositPaise, packages, cleaningFeePaise, alterationFeePaise, notes, fitting }) => ({ _id, title, size, colour, dailyRatePaise, depositPaise, packages, cleaningFeePaise, alterationFeePaise, notes, fitting })) };
 }
 async function catalogue(store, query = {}) {
   const configuration = await readConfiguration(store);
@@ -780,6 +788,7 @@ async function catalogue(store, query = {}) {
   if (query.size) filter.size = A.text(query.size, 80);
   if (query.colour) filter.colour = A.text(query.colour, 80);
   const productQuery = { $and: [store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }, inventoryRules.publishedRentalFilter()] };
+  if (query.category) productQuery.category = A.id(query.category);
   if (query.search) { const search = A.text(query.search, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); productQuery.name = new RegExp(search, 'i'); }
   const products = await Product.find(productQuery).select('_id name images category').limit(10000).lean();
   const productMap = new Map(products.map(p => [String(p._id), p]));
@@ -808,11 +817,14 @@ async function report(store, query) {
 }
 async function listBookings(store, query = {}, userId) {
   const page = A.integer(Number(query.page || 1), 'page', 1, 10000);
-  const filter = { storeId: store._id, ...(userId ? { userId } : {}) };
-  if (query.status) { if (!['HELD', 'CONFIRMED', 'PREPARING', 'READY', 'OUT', 'RETURNED', 'CLOSED', 'CANCELLED', 'EXPIRED'].includes(query.status)) fail('Choose a valid booking status.', 'VALIDATION_ERROR'); filter.status = query.status; }
-  if (query.from || query.to) { const from = A.date(query.from), to = A.date(query.to); if (+to <= +from || +to - +from > 93 * A.DAY) fail('Use a calendar range of at most 93 days.', 'VALIDATION_ERROR'); filter.$or = [{ 'schedule.pickupAt': { $lt: to }, 'schedule.returnDueAt': { $gt: from } }, { 'trial.at': { $gte: from, $lt: to } }]; }
-  if (query.overdue === 'true') { filter.status = 'OUT'; filter['schedule.returnDueAt'] = { $lt: new Date() }; }
-  const [rows, total] = await Promise.all([M.Booking.find(filter).sort('-createdAt').skip((page - 1) * 30).limit(30).lean(), M.Booking.countDocuments(filter)]);
+  const operations = require('./rentalOperationsService');
+  const { filter, view } = await operations.bookingFilter(store, query, userId);
+  let rows, total;
+  const sort = view === 'pickups' ? { 'schedule.pickupAt': 1, _id: 1 } : ['returns', 'overdue'].includes(view) ? { 'schedule.returnDueAt': 1, _id: 1 } : { createdAt: -1, _id: -1 };
+  if (['balance', 'refunds'].includes(view)) {
+    const [result] = await M.Booking.aggregate([...operations.financialPipeline(filter, view), { $sort: sort }, { $facet: { rows: [{ $skip: (page - 1) * 30 }, { $limit: 30 }, { $unset: ['_collected', '_reserved', '_deductions', '_rent', '_required'] }], count: [{ $count: 'total' }] } }]);
+    rows = result.rows; total = result.count[0]?.total || 0;
+  } else [rows, total] = await Promise.all([M.Booking.find(filter).sort(sort).skip((page - 1) * 30).limit(30).lean(), M.Booking.countDocuments(filter)]);
   return { rows: rows.map(b => present(b, { staff: !userId })), total, page, pages: Math.ceil(total / 30) };
 }
 async function workspace(store) {

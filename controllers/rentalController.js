@@ -40,6 +40,11 @@ const write = (name, fn) => asyncHandler(async (req, res) => {
   send(res, bookingPrivacy(req, data));
 });
 exports.staffPermission = staffPermission;
+exports.calendar = asyncHandler(async (req, res) => send(res, await require('../services/rentalCalendarService').calendar(req.store, req.params.id, req.query)));
+exports.calendarSet = asyncHandler(async (req, res) => send(res, await require('../services/rentalCalendarService').calendarSet(req.store, req.body, { counter: req.rentalStaff === true })));
+exports.setup = asyncHandler(async (req, res) => send(res, await require('../services/rentalSetupService').detail(req.store, req.params.id)));
+exports.timeline = asyncHandler(async (req, res) => send(res, await require('../services/rentalOperationsService').timeline(req.store, req.query)));
+exports.dailyDesk = asyncHandler(async (req, res) => send(res, await require('../services/rentalOperationsService').dailyDesk(req.store, req.query)));
 exports.availability = asyncHandler(async (req, res) => send(res, await require('../services/rentalAvailabilityService').availability(req.store, req.query, { counter: req.rentalStaff === true })));
 exports.alternatives = asyncHandler(async (req, res) => send(res, await require('../services/rentalAvailabilityService').alternatives(req.store, req.params.id, req.query, { counter: req.rentalStaff === true })));
 exports.slots = asyncHandler(async (req, res) => send(res, await require('../services/rentalAvailabilityService').slots(req.store, req.query, { counter: req.rentalStaff === true })));

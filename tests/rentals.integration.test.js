@@ -19,8 +19,8 @@ before(startTestEnvironment); after(stopTestEnvironment);
 beforeEach(async () => {
   await resetDatabase(); store = await ensureDefaultStore(); customer = await createCustomer(); admin = await createAdmin(); product = await createProduct({ storeId: store._id, commerceMode: 'SALE_AND_RENTAL' });
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY } }, admin.user._id);
+  asset = await S.saveAsset(store, { productId: String(product._id), poolKey: 'lehenga-m', code: 'LEHENGA-001', label: 'Bridal lehenga M' });
   listing = await S.saveListing(store, { productId: String(product._id), title: 'Bridal lehenga', active: true, dailyRatePaise: 100000, depositPaise: 500000, requirements: [{ poolKey: 'lehenga-m', label: 'Lehenga M', quantity: 1 }] }, admin.user._id);
-  asset = await S.saveAsset(store, { poolKey: 'lehenga-m', code: 'LEHENGA-001', label: 'Bridal lehenga M' });
 });
 const hold = async (input = {}, user = customer.user) => {
   const payload = { ...dates(), items: [{ listingId: String(listing._id), quantity: 1 }], attemptId: op(), acceptTerms: true, policyRevision: 1, customer: {}, ...input };
@@ -28,9 +28,9 @@ const hold = async (input = {}, user = customer.user) => {
   return S.hold(store, { ...payload, quoteFingerprint: quote.quoteFingerprint }, user);
 };
 const action = (b, action, extra = {}) => S.mutateBooking(store, b._id, { operationId: op(), revision: b.revision, action, ...extra }, admin.user._id);
-test('existing sales default and fashion preset remain unchanged', async () => {
+test('boutique default and fashion preset remain available', async () => {
   const { DEFAULT_STRUCTURE, INDUSTRY_PRESETS } = require('../config/industryPresets');
-  assert.equal(DEFAULT_STRUCTURE.industry, 'fashion'); assert.equal(INDUSTRY_PRESETS[0].id, 'fashion');
+  assert.equal(DEFAULT_STRUCTURE.industry, 'boutique'); assert.equal(INDUSTRY_PRESETS[0].id, 'fashion');
   const second = await Store.create({ name: 'Sale store', slug: 'sale-store' });
   assert.equal((await S.readConfiguration(second)).mode, 'SALE_ONLY');
 });
@@ -50,10 +50,12 @@ test('cleaning/preparation buffers prevent apparently adjacent bookings', async 
   await assert.rejects(() => hold({ pickupAt: new Date(b.schedule.returnDueAt).toISOString(), returnDueAt: new Date(+b.schedule.returnDueAt + 2 * A.DAY).toISOString() }), /unavailable/);
 });
 test('a set requires every physical component and never double allocates', async () => {
-  const set = await S.saveListing(store, { productId: String(product._id), title: 'Complete bridal set', active: true, dailyRatePaise: 100000, depositPaise: 500000, requirements: [{ productId: String(product._id), poolKey: 'lehenga-m', label: 'Lehenga', quantity: 1 }, { productId: String(product._id), poolKey: 'necklace', label: 'Necklace', quantity: 1 }] });
-  await assert.rejects(() => hold({ items: [{ listingId: String(set._id), quantity: 1 }] }), /Necklace is unavailable/);
+  let set = await S.saveListing(store, { productId: String(product._id), title: 'Complete bridal set', active: false, dailyRatePaise: 100000, depositPaise: 500000, requirements: [{ productId: String(product._id), poolKey: 'lehenga-m', label: 'Lehenga', quantity: 1 }, { productId: String(product._id), poolKey: 'necklace', label: 'Necklace', quantity: 1 }] });
+  await assert.rejects(() => S.saveListing(store, { ...set, active: true }), /Actual matching pieces/);
+  await assert.rejects(() => hold({ items: [{ listingId: String(set._id), quantity: 1 }] }), /unavailable/);
   assert.equal(await M.Booking.countDocuments(), 0);
-  await S.saveAsset(store, { poolKey: 'necklace', code: 'NECK-001', label: 'Necklace' });
+  await S.saveAsset(store, { productId: String(product._id), poolKey: 'necklace', code: 'NECK-001', label: 'Necklace' });
+  set = await S.saveListing(store, { ...set, active: true });
   const b = await hold({ items: [{ listingId: String(set._id), quantity: 1 }] }); assert.equal(b.allocations.length, 2);
 });
 test('expired hold releases dates; delayed captured payment does not revive it', async () => {
@@ -179,8 +181,8 @@ test('lost piece is not falsely received and future bookings must be safely subs
   assert.equal((await M.Asset.findById(asset._id)).status, 'RETIRED');
 });
 test('partial line cancellation preserves the remaining booking and refunds only its surplus', async () => {
+  await S.saveAsset(store, { productId: String(product._id), poolKey: 'necklace', code: 'NECK-001', label: 'Necklace' });
   const accessory = await S.saveListing(store, { productId: String(product._id), title: 'Necklace', active: true, dailyRatePaise: 50000, depositPaise: 200000, requirements: [{ poolKey: 'necklace', label: 'Necklace', quantity: 1 }] });
-  await S.saveAsset(store, { poolKey: 'necklace', code: 'NECK-001', label: 'Necklace' });
   let b = await collectFull(await hold({ items: [{ listingId: String(listing._id), quantity: 1 }, { listingId: String(accessory._id), quantity: 1 }] }));
   b = await S.cancelItems(store, b._id, { revision: b.revision, operationId: op(), listingId: String(listing._id), ownerFault: true, acceptPricePaise: 300000, note: 'Customer agreed to retain only the necklace.' });
   assert.equal(b.status, 'CONFIRMED'); assert.equal(b.quote.items.length, 1); assert.equal(b.allocations.length, 1); assert.equal(b.financial.refundablePaise, 700000); assert.equal(b.acceptedQuote.items.length, 2);
@@ -342,7 +344,7 @@ test('monthly usage excludes unpaid holds and preserves combined signed installa
   b = await S.recordCollection(store, b._id, { operationId: op(), revision: b.revision, amountPaise: b.quote.dueNowPaise, method: 'CASH', reference: 'SIGNED-LIMIT' });
   const usage = await U.monthlyUsage({ store }); assert.equal(usage.rentalBookingsPerMonth, 1); assert.equal(usage.saleOrdersPerMonth, 0);
   await assert.rejects(() => hold({ ...dates(10) }), e => e.errorCode === 'PLAN_LIMIT_REACHED');
-  const report = await require('../services/subscriptionService').subscriptionStatus(store); assert.equal(report.usage.ordersPerMonth, 1); assert.equal(report.usage.rentalBookingsPerMonth, 1);
+  const installationUsage = await U.monthlyUsage({ allStores: true }); assert.equal(installationUsage.ordersPerMonth, 1); assert.equal(installationUsage.rentalBookingsPerMonth, 1);
 });
 
 test('a failed payment attempt cannot release a still-open provider order for duplicate collection', async () => {
