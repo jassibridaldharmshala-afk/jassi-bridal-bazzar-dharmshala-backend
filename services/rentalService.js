@@ -212,12 +212,13 @@ async function quoteInternal(store, input, session, { existing = false, counter 
     seen.add(listingId);
     const listing = await M.Listing.findOne({ _id: listingId, storeId: store._id, active: true }).session(session || null).lean();
     if (!listing) fail('A selected rental listing is unavailable.', 'NOT_FOUND');
-    const product = await Product.findOne({ $and: [productFilter(store, listing.productId), inventoryRules.publishedRentalFilter()] }).session(session || null).select('_id variants').lean();
+    const product = await Product.findOne({ $and: [productFilter(store, listing.productId), inventoryRules.publishedRentalFilter()] }).session(session || null).select('_id variants images').lean();
     if (!product) fail('A selected product is unavailable.', 'NOT_FOUND');
     if (listing.variantId && !product.variants?.some(v => String(v._id) === listing.variantId && v.isActive !== false)) fail('The selected rental variant is unavailable.', 'OUT_OF_STOCK');
-    lines.push({ listing, quantity: A.integer(item.quantity, 'quantity', 1, 10) });
+    lines.push({ listing: { ...listing, image: product.images?.[0] }, quantity: A.integer(item.quantity, 'quantity', 1, 10) });
   }
-  const price = A.quote(lines, dates, policy, input.deliveryMode || 'STORE_PICKUP');
+  const price = A.quote(lines, dates, policy, input.deliveryMode || 'STORE_PICKUP', input.paymentPlan || (policy.paymentPlans || ['ADVANCE'])[0]);
+  if (price.paymentPlan === 'PICKUP' || dates.billingBasis === 'USE_DAYS') dates.balanceDueAt = dates.pickupAt;
   const allocations = [];
   const used = new Set();
   for (const line of lines) for (const requirement of line.listing.requirements) {
@@ -295,7 +296,7 @@ async function hold(store, input, user, { counter = false } = {}) {
   if (!counter) await require('./customerAccessService').assertCustomerCanCheckout({ storeId: store._id, userId: user._id });
   if (!counter) customer.phone = user.phone;
   const details = input.bookingDetails === undefined ? undefined : D.bookingDetails(input.bookingDetails, input.deliveryMode || 'STORE_PICKUP');
-  const fingerprint = crypto.createHash('sha256').update(JSON.stringify({ userId: counter ? null : String(user._id), items: input.items, pickupAt: input.pickupAt, returnDueAt: input.returnDueAt, eventAt: input.eventAt || '', deliveryMode: input.deliveryMode || 'STORE_PICKUP', address: input.address || '', customer, ...(details ? { bookingDetails: details } : {}) })).digest('hex');
+  const fingerprint = crypto.createHash('sha256').update(JSON.stringify({ userId: counter ? null : String(user._id), items: input.items, pickupAt: input.pickupAt, returnDueAt: input.returnDueAt, eventAt: input.eventAt || '', ...(input.useDates !== undefined ? { useDates: input.useDates } : {}), ...(input.paymentPlan !== undefined ? { paymentPlan: input.paymentPlan } : {}), deliveryMode: input.deliveryMode || 'STORE_PICKUP', address: input.address || '', customer, ...(details ? { bookingDetails: details } : {}) })).digest('hex');
   return transaction(store, async (session, config) => {
     const previous = await M.Booking.findOne({ storeId: store._id, attemptId }).session(session);
     if (previous) { if (previous.fingerprint !== fingerprint) fail('This booking attempt belongs to different details. Start a new attempt.'); return present(previous); }
@@ -304,7 +305,7 @@ async function hold(store, input, user, { counter = false } = {}) {
     const platform = await admission(store);
     const launch = await launchReadiness(store, session);
     if (!launch.acceptingOrders) fail(launch.pauseMessage, 'CHECKOUT_RESTRICTED');
-    if (!counter && !launch.onlinePayments) fail('Online rental payments are unavailable. Contact the store; no booking or payment has been created.', 'CHECKOUT_RESTRICTED');
+    if (!counter && input.paymentPlan !== 'PICKUP' && !launch.onlinePayments) fail('Online rental payments are unavailable. Contact the store; no booking or payment has been created.', 'CHECKOUT_RESTRICTED');
     const data = await quoteInternal(store, input, session, { counter });
     if (input.policyRevision !== data.policyRevision) fail('Rental terms changed. Review the quote and accept again.', 'RENTAL_QUOTE_CHANGED');
     if (input.quoteFingerprint !== A.quoteFingerprint(store._id, data)) fail('The rental price or listing changed. Review the latest quote and accept it again before reserving.', 'RENTAL_QUOTE_CHANGED');
@@ -320,6 +321,11 @@ async function hold(store, input, user, { counter = false } = {}) {
     await booking.save({ session });
     if (matchedCustomer) { booking.userId = matchedCustomer._id; await booking.save({ session }); }
     await M.Reservation.insertMany(data.allocations.map(a => ({ storeId: store._id, assetId: a.assetId, bookingId: booking._id, blockedFrom: data.schedule.blockedFrom, blockedUntil: data.schedule.blockedUntil, expiresAt })), { session });
+    if (data.quote.paymentPlan === 'PICKUP') {
+      await confirmIfPaid(booking, session, { store, platform });
+      booking.events.push({ operationId: attemptId + '_confirm', type: 'CONFIRMED', at: new Date(), actorId: user?._id, note: 'Payment agreed at pickup.' });
+      await booking.save({ session }); await enqueue(booking, 'CONFIRMED', session, attemptId);
+    }
     return present(booking);
   });
 }
@@ -345,7 +351,7 @@ async function confirmIfPaid(booking, session, { store, platform, captured = fal
   if (booking.status !== 'HELD') return;
   if (+booking.expiresAt <= Date.now()) { booking.status = 'EXPIRED'; booking.adjustedRentalPaise = 0; await M.Reservation.updateMany({ storeId: booking.storeId, bookingId: booking._id }, { $set: { active: false } }, { session }); return; }
   if (A.finances(booking).collectedPaise < booking.quote.dueNowPaise) return;
-  if (!booking.quote.advanceRentPaise || !booking.quote.dueNowPaise || !A.finances(booking).collectedPaise) fail('A verified positive booking advance is compulsory.', 'VALIDATION_ERROR');
+  if (booking.quote.paymentPlan !== 'PICKUP' && (!booking.quote.advanceRentPaise || !booking.quote.dueNowPaise || !A.finances(booking).collectedPaise)) fail('A verified positive booking advance is compulsory.', 'VALIDATION_ERROR');
   const ids = booking.allocations.map(a => a.assetId);
   const assets = await M.Asset.find({ storeId: booking.storeId, _id: { $in: ids } }).session(session).lean();
   const productIds = [...new Set(booking.quote.items.map(i => String(i.productId)))];
@@ -447,9 +453,9 @@ async function mutateBooking(store, bookingId, input, actorId) {
           b.earlyReturnedAt = new Date();
           if (b.policy.earlyReturnPolicy === 'ACTUAL_DAYS' && b.allocations.every(a => a.receivedAt && !a.lostAt)) {
             b.acceptedQuote ||= JSON.parse(JSON.stringify(b.quote));
-            const days = Math.max(b.policy.minimumDays, Math.ceil((Date.now() - +b.schedule.pickupAt) / A.DAY));
-            const lines = b.quote.items.map(i => ({ listing: { _id: i.listingId, productId: i.productId, title: i.title, components: i.components, ...i.rules }, quantity: i.quantity }));
-            const adjusted = A.quote(lines, { ...b.schedule, days }, b.policy, b.quote.deliveryMode);
+            const days = b.schedule.useDates ? Math.max(b.policy.minimumDays, b.schedule.useDates.filter(day => day <= A.localKey(new Date(), b.policy.timezone)).length) : Math.max(b.policy.minimumDays, Math.ceil((Date.now() - +b.schedule.pickupAt) / A.DAY));
+            const lines = b.quote.items.map(i => ({ listing: { _id: i.listingId, productId: i.productId, title: i.title, image: i.image, components: i.components, ...i.rules }, quantity: i.quantity }));
+            const adjusted = A.quote(lines, { ...b.schedule, days }, b.policy, b.quote.deliveryMode, b.quote.paymentPlan || 'ADVANCE');
             b.adjustedRentalPaise = Math.min(b.quote.rentalPaise, adjusted.rentalPaise) + b.cancellationChargesPaise;
           }
         }
@@ -484,8 +490,9 @@ async function mutateBooking(store, bookingId, input, actorId) {
       await assertNoOpenCourier(b, session);
       if (!['HELD', 'CONFIRMED', 'PREPARING', 'READY'].includes(b.status)) fail('Cancellation is not available after handover.');
       if (!input.note) fail('Record the cancellation reason.', 'VALIDATION_ERROR');
-      b.adjustedRentalPaise = input.ownerFault === true ? 0 : b.cancellationChargesPaise + Math.min(A.cancellationRent(b), Math.max(0, A.paidRent(b) - b.cancellationChargesPaise));
+      b.adjustedRentalPaise = input.retainedRentalPaise !== undefined ? A.integer(input.retainedRentalPaise, 'retained rental charge', 0, A.paidRent(b)) : input.ownerFault === true ? 0 : b.cancellationChargesPaise + Math.min(A.cancellationRent(b), Math.max(0, A.paidRent(b) - b.cancellationChargesPaise));
       b.status = 'CANCELLED'; b.cancelledReason = A.text(input.note, 1000);
+      for (const request of b.requests.filter(row => row.type === 'CANCEL' && row.status === 'PENDING')) { request.status = 'RESOLVED'; request.resolvedAt = new Date(); request.responseNote = b.cancelledReason; }
       await studio.cancelWork(store, b, session, actorId);
       await M.Reservation.updateMany({ storeId: store._id, bookingId: b._id }, { $set: { active: false } }, { session });
     } else if (action === 'NO_SHOW') {
@@ -554,15 +561,16 @@ async function reschedule(store, bookingId, input, actorId) {
     await assertNoOpenCourier(b, session, b.status === 'OUT' ? 'inbound' : undefined);
     if (!['CONFIRMED', 'PREPARING', 'READY', 'OUT'].includes(b.status)) fail('This booking cannot change dates.');
     const policy = A.validatePolicy(b.policy, { existing: true });
-    const dates = A.schedule({ ...input, eventAt: input.eventAt || (b.schedule.eventAt ? new Date(b.schedule.eventAt).toISOString() : undefined) }, policy, new Date(), { existing: b.status === 'OUT', allowImmediate: true });
+    const dates = A.schedule({ ...(b.schedule.useDates ? { useDates: b.schedule.useDates } : {}), ...input, eventAt: input.eventAt || (b.schedule.eventAt ? new Date(b.schedule.eventAt).toISOString() : undefined) }, policy, new Date(), { existing: b.status === 'OUT', allowImmediate: true });
     if (b.status === 'OUT' && b.allocations.some(a => a.receivedAt || a.lostAt)) fail('An extension is unavailable after any pieces have been returned or declared lost.');
     if (b.status === 'OUT' && (+dates.pickupAt !== +b.schedule.pickupAt || +dates.returnDueAt <= +b.schedule.returnDueAt)) fail('An active rental can only extend its return deadline.');
     const assets = await M.Asset.find({ storeId: store._id, _id: { $in: b.allocations.map(a => a.assetId) } }).session(session).lean();
     if (assets.length !== b.allocations.length || assets.some(a => a.status !== 'READY' && !(b.status === 'OUT' && String(a.currentBookingId) === String(b._id)))) fail('Allocated pieces are not available for a date change.');
     if (await M.Reservation.exists({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, bookingId: { $ne: b._id }, active: true, blockedFrom: { $lt: dates.blockedUntil }, blockedUntil: { $gt: dates.blockedFrom }, $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] }).session(session)) fail('New dates conflict with another booking. Existing dates remain unchanged.', 'OUT_OF_STOCK');
     await assertSlotCapacity(store, dates, policy, session, b._id);
-    const lines = b.quote.items.map(i => ({ listing: { _id: i.listingId, productId: i.productId, title: i.title, components: i.components, ...i.rules }, quantity: i.quantity }));
-    const price = A.quote(lines, dates, policy, b.quote.deliveryMode);
+    const lines = b.quote.items.map(i => ({ listing: { _id: i.listingId, productId: i.productId, title: i.title, image: i.image, components: i.components, ...i.rules }, quantity: i.quantity }));
+    const price = A.quote(lines, dates, policy, b.quote.deliveryMode, b.quote.paymentPlan || 'ADVANCE');
+    if (price.paymentPlan === 'PICKUP' || dates.billingBasis === 'USE_DAYS') dates.balanceDueAt = dates.pickupAt;
     if (input.acceptPricePaise !== price.totalPaise + b.cancellationChargesPaise) fail(`Date change total is ${(price.totalPaise + b.cancellationChargesPaise) / 100} INR. Explicitly accept this amount.`, 'VALIDATION_ERROR');
     b.acceptedQuote ||= JSON.parse(JSON.stringify(b.quote));
     b.quote = price; b.adjustedRentalPaise = price.rentalPaise + b.cancellationChargesPaise; b.schedule = dates;
@@ -609,8 +617,8 @@ async function cancelItems(store, bookingId, input, actorId) {
     b.acceptedQuote ||= JSON.parse(JSON.stringify(b.quote));
     b.cancelledItems.push({ ...removed, retainedPaise: retained, note: A.text(input.note, 1000), allocations: allocations.map(a => ({ assetId: a.assetId, code: a.code })), at: new Date() });
     b.cancellationChargesPaise += retained;
-    const lines = b.quote.items.filter(i => String(i.listingId) !== listingId).map(i => ({ listing: { _id: i.listingId, productId: i.productId, title: i.title, components: i.components, ...i.rules }, quantity: i.quantity }));
-    const price = A.quote(lines, b.schedule, b.policy, b.quote.deliveryMode);
+    const lines = b.quote.items.filter(i => String(i.listingId) !== listingId).map(i => ({ listing: { _id: i.listingId, productId: i.productId, title: i.title, image: i.image, components: i.components, ...i.rules }, quantity: i.quantity }));
+    const price = A.quote(lines, b.schedule, b.policy, b.quote.deliveryMode, b.quote.paymentPlan || 'ADVANCE');
     if (input.acceptPricePaise !== price.totalPaise + b.cancellationChargesPaise) fail(`Remaining total, including retained cancellation charges, is ${(price.totalPaise + b.cancellationChargesPaise) / 100} INR. Record customer acceptance.`, 'VALIDATION_ERROR');
     b.quote = price; b.adjustedRentalPaise = price.rentalPaise + b.cancellationChargesPaise;
     b.allocations = b.allocations.filter(a => String(a.listingId) !== listingId);
@@ -803,9 +811,9 @@ async function publicListings(store, productId) {
     for (const row of rows.filter(row => row.active)) reasons.push(...statuses.get(String(row._id)).reasons);
   }
   if (!config.readiness.acceptingOrders) reasons.push({ code: 'ORDERS_PAUSED', message: config.readiness.pauseMessage });
-  if (!config.readiness.onlinePayments) reasons.push({ code: 'ONLINE_PAYMENT_UNAVAILABLE', message: 'Online payment is unavailable. Contact the store to discuss a rental request.' });
+  if (!config.readiness.onlinePayments && !config.policy.paymentPlans?.includes('PICKUP')) reasons.push({ code: 'ONLINE_PAYMENT_UNAVAILABLE', message: 'Online payment is unavailable. Contact the store to discuss a rental request.' });
   return { enabled: config.mode !== 'SALE_ONLY', timezone: config.policy.timezone, policy: config.policy, policyRevision: config.revision,
-    readiness: { ...config.readiness, bookable: config.mode !== 'SALE_ONLY' && live.length > 0 && config.readiness.acceptingOrders && config.readiness.onlinePayments, reasons },
+    readiness: { ...config.readiness, bookable: config.mode !== 'SALE_ONLY' && live.length > 0 && config.readiness.acceptingOrders && (config.readiness.onlinePayments || config.policy.paymentPlans?.includes('PICKUP')), reasons },
     contact: config.contact, listings: config.mode === 'SALE_ONLY' ? [] : live.map(row => publicOffer(row, statuses.get(String(row._id)))) };
 }
 async function catalogue(store, query = {}, { all = false } = {}) {
@@ -813,6 +821,12 @@ async function catalogue(store, query = {}, { all = false } = {}) {
   if (configuration.mode === 'SALE_ONLY') return { configuration, rows: [], total: 0, page: 1, pages: 0 };
   const page = A.integer(Number(query.page || 1), 'page', 1, 10000);
   const filter = { storeId: store._id, active: true };
+  if (query.minRent !== undefined || query.maxRent !== undefined) {
+    const min = query.minRent !== undefined ? A.integer(Math.round(Number(query.minRent) * 100), 'minimum daily rent', 0) : 0;
+    const max = query.maxRent !== undefined ? A.integer(Math.round(Number(query.maxRent) * 100), 'maximum daily rent', 0) : 100000000;
+    if (max < min) fail('Maximum daily rent must be at least the minimum.', 'VALIDATION_ERROR');
+    filter.dailyRatePaise = { $gte: min, $lte: max };
+  }
   if (query.productId) filter.productId = A.id(query.productId);
   if (query.listingIds) {
     if (typeof query.listingIds !== 'string' || query.listingIds.split(',').length > 10) fail('Choose at most 10 rental listing IDs.', 'VALIDATION_ERROR');
@@ -823,13 +837,14 @@ async function catalogue(store, query = {}, { all = false } = {}) {
   const productQuery = { $and: [store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }, inventoryRules.publishedRentalFilter()] };
   if (query.category) productQuery.category = A.id(query.category);
   if (query.search) { const search = A.text(query.search, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); productQuery.name = new RegExp(search, 'i'); }
-  const products = await Product.find(productQuery).select('_id name images category').lean();
+  const products = await Product.find(productQuery).select('_id name slug images category commerceMode sizes colors').lean();
   const productMap = new Map(products.map(p => [String(p._id), p]));
   if (filter.productId && !productMap.has(String(filter.productId))) return { configuration, rows: [], total: 0, page, pages: 0 };
   if (!filter.productId) filter.productId = { $in: products.map(p => p._id) };
   const offers = await M.Listing.find(filter).sort('title _id').lean();
   const statuses = await require('./rentalSetupService').batchReadiness(store, offers);
   const eligible = offers.filter(row => statuses.get(String(row._id)).ready);
+  if (query.sort === 'priceLowHigh' || query.sort === 'priceHighLow') eligible.sort((a, b) => (a.dailyRatePaise - b.dailyRatePaise) * (query.sort === 'priceLowHigh' ? 1 : -1) || String(a._id).localeCompare(String(b._id)));
   const rows = (all ? eligible : eligible.slice((page - 1) * 30, page * 30)).map(row => ({ ...publicOffer(row, statuses.get(String(row._id))), product: productMap.get(String(row.productId)) }));
   return { configuration, rows, total: eligible.length, page, pages: Math.ceil(eligible.length / 30) };
 }

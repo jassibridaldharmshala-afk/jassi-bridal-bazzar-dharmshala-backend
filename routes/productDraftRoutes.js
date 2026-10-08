@@ -3,6 +3,7 @@ const { protect } = require('../middleware/authMiddleware');
 const { adminOnly } = require('../middleware/adminMiddleware');
 const draft = require('../controllers/productDraftController');
 
+router.get('/bulk-upload/status', protect, adminOnly, draft.bulkUploadStatus);
 router.post('/bulk-upload', protect, adminOnly, draft.bulkUploadMiddleware.array('images', 30), draft.bulkUpload);
 router.post('/publish-selected', protect, adminOnly, draft.publishSelected);
 router.get('/autosave', protect, adminOnly, draft.getAutosave);

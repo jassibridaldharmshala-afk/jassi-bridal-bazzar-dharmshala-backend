@@ -17,8 +17,8 @@ async function report(store, query) {
     const f = A.finances(b);
     let pricedItems = b.quote.items;
     if (b.earlyReturnedAt && b.policy.earlyReturnPolicy === 'ACTUAL_DAYS') {
-      const days = Math.max(b.policy.minimumDays, Math.ceil((+new Date(b.earlyReturnedAt) - +new Date(b.schedule.pickupAt)) / A.DAY));
-      pricedItems = A.quote(b.quote.items.map(i => ({ listing: { _id: i.listingId, productId: i.productId, title: i.title, components: i.components, ...i.rules }, quantity: i.quantity })), { ...b.schedule, days }, { ...A.DEFAULT_POLICY, ...b.policy }, b.quote.deliveryMode).items;
+      const days = b.schedule.useDates ? Math.max(b.policy.minimumDays, b.schedule.useDates.filter(day => day <= A.localKey(new Date(b.earlyReturnedAt), b.policy.timezone)).length) : Math.max(b.policy.minimumDays, Math.ceil((+new Date(b.earlyReturnedAt) - +new Date(b.schedule.pickupAt)) / A.DAY));
+      pricedItems = A.quote(b.quote.items.map(i => ({ listing: { _id: i.listingId, productId: i.productId, title: i.title, components: i.components, ...i.rules }, quantity: i.quantity })), { ...b.schedule, days }, { ...A.DEFAULT_POLICY, ...b.policy }, b.quote.deliveryMode, b.quote.paymentPlan || 'ADVANCE').items;
     }
     const lineRents = pricedItems.map(i => i.rentPaise || 0), rentTotal = lineRents.reduce((n, v) => n + v, 0);
     const nonRentalCharges = b.quote.items.reduce((n, i) => n + (i.feesPaise || 0), 0) + (b.quote.deliveryFeePaise || 0) + (b.quote.returnFeePaise || 0) + (b.cancellationChargesPaise || 0);

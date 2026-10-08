@@ -32,6 +32,7 @@ async function startServer() {
       if (server) await new Promise((resolve) => server.close(resolve));
       for (const cleanup of cleanupTasks.reverse()) await cleanup();
       await require('./queues/reelImport.queue').closeReelImportQueue().catch(() => null);
+      await require('./services/uploadRetryService').waitForActiveUploads();
       if (mongoose.connection.readyState !== 0) await mongoose.disconnect();
       clearTimeout(forceExit);
       process.exit(error ? 1 : 0);

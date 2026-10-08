@@ -213,3 +213,24 @@ test('removing a display version invalidates its receipt without recreating it o
   await assert.rejects(runUploadRequest(input, () => { throw new Error('Must not re-upload'); }), error => error.errorCode === 'UPLOAD_RETRY_CONFLICT');
   assert.equal(counter.calls, 1);
 });
+
+test('requesting async processing retains the previous synchronous upload identity and partial file receipts', async () => {
+  const input = req(), counter = { calls: 0 };
+  await assert.rejects(runUploadRequest(input, async context => { await context.upload(input.files[0], 0, save(counter)); throw new Error('response/save interrupted'); }));
+  const upgraded = { ...input, body: { ...input.body, asyncUpload: 'true' } };
+  const result = await runUploadRequest(upgraded, context => context.upload(upgraded.files[0], 0, save(counter)));
+  assert.ok(result.url); assert.equal(counter.calls, 1);
+  assert.equal((await Operation.findOne()).fields.asyncUpload, undefined);
+});
+
+test('a competing upload that finishes before claim failure returns the saved result immediately', async t => {
+  const input = req(), result = { success: true, data: { drafts: [{ _id: 'saved-draft' }] } };
+  await runUploadRequest(input, async () => result);
+  await Operation.updateOne({}, { $set: { status: 'PENDING' } });
+  t.mock.method(Operation, 'findOneAndUpdate', () => ({ lean: async () => {
+    await Operation.updateOne({}, { $set: { status: 'COMPLETE' } }); return null;
+  } }));
+  let replays = 0;
+  const recovered = await runUploadRequest(input, () => { throw new Error('Must not create another draft'); }, { respondAsync: true, replay: saved => { replays++; return saved; } });
+  assert.deepEqual(recovered, result); assert.equal(replays, 1);
+});

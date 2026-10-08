@@ -14,6 +14,8 @@ const schema = new mongoose.Schema({
   attempts: { type: Number, default: 0 },
   files: { type: [mongoose.Schema.Types.Mixed], default: [] },
   result: mongoose.Schema.Types.Mixed,
+  progress: mongoose.Schema.Types.Mixed,
+  failure: mongoose.Schema.Types.Mixed,
   recordId: { type: String, index: true },
 }, { timestamps: true, versionKey: false });
 schema.index({ 'files.provider': 1, 'files.publicId': 1 });

@@ -55,6 +55,7 @@ router.patch('/products/:id/status', requireStorePermission('catalog.write'), pr
 router.patch('/products/:id/stock', requireStorePermission('inventory.write'), product.updateStock);
 router.patch('/products/:id/mark-out-of-stock', requireStorePermission('inventory.write'), product.markOutOfStock);
 router.patch('/products/:id/hide', requireStorePermission('catalog.write'), product.hideProduct);
+router.get('/product-drafts/bulk-upload/status', requireStorePermission('catalog.write'), productDraft.bulkUploadStatus);
 router.post('/product-drafts/bulk-upload', requireStorePermission('catalog.write'), productDraft.bulkUploadMiddleware.array('images', 30), productDraft.bulkUpload);
 router.post('/product-drafts', requireStorePermission('catalog.write'), productDraft.createDraft);
 router.get('/product-drafts', requireStorePermission('catalog.read'), productDraft.listDrafts);

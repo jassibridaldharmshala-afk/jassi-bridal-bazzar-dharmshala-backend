@@ -92,7 +92,10 @@ exports.releaseBlock = write('MAINTENANCE_RELEASE', req => service.releaseBlock(
 exports.collect = write('PAYMENT_RECORDED', req => service.recordCollection(req.store, req.params.id, req.body, req.user._id));
 exports.payments = asyncHandler(async (req, res) => send(res, await service.listPayments(req.store, req.params.id)));
 exports.recoverPayment = write('PAYMENT_RECHECKED', req => service.recoverPayment(req.store, req.params.id, req.params.paymentId));
-exports.operation = write('WORKFLOW', req => service.mutateBooking(req.store, req.params.id, req.body, req.user._id));
+exports.operation = write('WORKFLOW', req => {
+  if (req.body?.retainedRentalPaise !== undefined && (!can(req, 'returns.refund') || (!isMasterOwner(req.user) && req.store?.catalogStructure?.clientPermissions?.returns === false))) throw new ApiError('FORBIDDEN', 'Refund permission is required to override cancellation retention.');
+  return service.mutateBooking(req.store, req.params.id, req.body, req.user._id);
+});
 exports.reschedule = write('DATES_CHANGED', req => service.reschedule(req.store, req.params.id, req.body, req.user._id));
 exports.replace = write('PIECE_REPLACED', req => service.replacePiece(req.store, req.params.id, req.body, req.user._id));
 exports.cancelItems = write('ITEMS_CANCELLED', req => service.cancelItems(req.store, req.params.id, req.body, req.user._id));

@@ -20,7 +20,7 @@ const { recordOpeningInventory } = require('../services/inventoryService');
 const DeletedProductDraft = require('../models/DeletedProductDraft');
 const { ApiError } = require('../utils/apiError');
 const { supportsTransactions, runInTransaction } = require('../utils/transaction');
-const { runUploadRequest } = require('../services/uploadRetryService');
+const { runUploadRequest, getUploadStatus } = require('../services/uploadRetryService');
 const { storeFiles } = require('../services/mediaUploadService');
 const { createRecordOnce } = require('../services/recordCreationService');
 const { resolveDraftPhotoGroups } = require('../utils/draftPhotoGroups');
@@ -44,9 +44,25 @@ function withDraftStore(req, payload = {}) {
 
 exports.bulkUploadMiddleware = require('../middleware/photoUploadMiddleware').createPhotoUpload({ files: 30 });
 
+async function replayDraftUpload(req, saved) {
+  const drafts = await ProductDraft.find(draftQuery(req, { _id: { $in: saved.data.drafts.map(draft => draft._id) } }));
+  if (drafts.length !== saved.data.drafts.length) throw new ApiError('UPLOAD_RETRY_CONFLICT', 'One or more drafts from this upload were removed. Start a new upload.', { statusCode: 409 });
+  const byId = new Map(drafts.map(draft => [String(draft._id), draft]));
+  return { ...saved, data: { drafts: saved.data.drafts.map(draft => formatDraft(byId.get(String(draft._id)))) } };
+}
+exports.bulkUploadStatus = asyncHandler(async (req, res) => {
+  const result = await getUploadStatus(req, {
+    requestPath: req.originalUrl.split('?')[0].replace(/\/status$/, ''),
+    replay: saved => replayDraftUpload(req, saved),
+  });
+  res.json(result);
+});
+
 exports.bulkUpload = async (req, res, next) => {
   try {
     const resume = req.body?.resumeUpload === true && !req.files?.length;
+    const respondAsync = req.body?.asyncUpload === true || req.body?.asyncUpload === 'true';
+    if (respondAsync && !resume && req.files?.length) resolveDraftPhotoGroups(req.body || {}, req.files.length);
     if (!resume && !req.files?.length) return res.status(400).json({ success: false, message: 'Please upload at least one image' });
     if (!isR2Configured() && !isCloudinaryConfigured() && process.env.NODE_ENV === 'production' && !isLocalRequest(req)) {
       throw new ApiError('PERSISTENT_UPLOAD_STORAGE_REQUIRED', 'Draft images need Cloudflare R2 or Cloudinary in production.', { statusCode: 503 });
@@ -87,6 +103,7 @@ exports.bulkUpload = async (req, res, next) => {
           createdBy: req.user?._id,
         });
       });
+      await context.progress?.({ phase: 'saving-drafts' });
       const drafts = await runInTransaction(async session => {
         const rows = [];
         for (const payload of payloads) {
@@ -102,14 +119,10 @@ exports.bulkUpload = async (req, res, next) => {
         summary: `Created product draft from ${photoGroups[index].photoIndexes.length} photos`,
       })));
       return { success: true, message: 'Drafts created successfully', data: { drafts: drafts.map(formatDraft) } };
-    }, { resume, replay: async saved => {
-      const drafts = await ProductDraft.find(draftQuery(req, { _id: { $in: saved.data.drafts.map(draft => draft._id) } }));
-      if (drafts.length !== saved.data.drafts.length) throw new ApiError('UPLOAD_RETRY_CONFLICT', 'One or more drafts from this upload were removed. Start a new upload.', { statusCode: 409 });
-      const byId = new Map(drafts.map(draft => [String(draft._id), draft]));
-      return { ...saved, data: { drafts: saved.data.drafts.map(draft => formatDraft(byId.get(String(draft._id)))) } };
-    } });
-    await cleanupTempFiles(req.files);
-    res.status(201).json(result);
+    }, { resume, respondAsync, replay: saved => replayDraftUpload(req, saved),
+      ...(respondAsync ? { onSettled: () => cleanupTempFiles(req.files) } : {}) });
+    if (!result.data?.upload) await cleanupTempFiles(req.files);
+    res.status(result.data?.upload ? 202 : 201).json(result);
   } catch (error) {
     await cleanupTempFiles(req.files);
     next(error);

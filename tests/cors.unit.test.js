@@ -17,8 +17,10 @@ test('bridal storefront origin can make credentialed API requests', () => {
   assert.equal(options.credentials, true);
   assert.ok(options.methods.includes('OPTIONS'));
   assert.ok(options.allowedHeaders.includes('Authorization'));
+  assert.ok(options.allowedHeaders.includes('x-store-slug'));
 });
 
 test('an unrelated origin remains blocked', () => {
   assert.equal(optionsFor('https://unrelated.example').origin, false);
+  assert.equal(optionsFor('https://untrusted-client.onrender.com').origin, false);
 });

@@ -7,6 +7,7 @@ const DEFAULT_POLICY = Object.freeze({
   timezone: 'Asia/Kolkata', holdMinutes: 10, preparationHours: 24, cleaningHours: 24,
   minimumDays: 1, maximumDays: 30, advancePercent: 30, graceHours: 2,
   advanceMode: 'PERCENT', advanceAmountPaise: 10000, depositTiming: 'BOOKING',
+  paymentPlans: ['ADVANCE', 'FULL', 'PICKUP'],
   requireConditionPhotos: false, requireCustomerAcknowledgement: false,
   rentalTaxBasisPoints: 0, rentalServiceCode: '', noShowGraceHours: 24,
   noShowRetainPercent: 100, earlyReturnPolicy: 'AGREED_PERIOD', courierIntegrationEnabled: false,
@@ -51,6 +52,7 @@ function validatePolicy(input = {}, { existing = false } = {}) {
   if (!input || Array.isArray(input) || typeof input !== 'object') invalid('Rental policy is invalid.');
   if (Object.keys(input).some(k => !(k in DEFAULT_POLICY))) invalid('Unsupported rental policy setting.');
   const p = { ...DEFAULT_POLICY, ...input };
+  if (!Array.isArray(p.paymentPlans) || !p.paymentPlans.length || p.paymentPlans.length > 3 || new Set(p.paymentPlans).size !== p.paymentPlans.length || p.paymentPlans.some(plan => !['ADVANCE', 'FULL', 'PICKUP'].includes(plan))) invalid('Choose valid rental payment plans.');
   if (!['PERCENT', 'FIXED'].includes(p.advanceMode)) invalid('Choose percentage or fixed booking advance.');
   if (!['BOOKING', 'PICKUP'].includes(p.depositTiming)) invalid('Choose when the security deposit is collected.');
   if (!['AGREED_PERIOD', 'ACTUAL_DAYS'].includes(p.earlyReturnPolicy)) invalid('Choose an early return policy.');
@@ -93,13 +95,24 @@ function slot(value, policy) {
 function schedule(input, policy, now = new Date(), { existing = false, allowImmediate = false } = {}) {
   const pickupAt = date(input.pickupAt), returnDueAt = date(input.returnDueAt);
   if (+returnDueAt <= +pickupAt) invalid('Return must be after pickup.');
-  const days = Math.ceil((+returnDueAt - +pickupAt) / DAY);
+  const custodyDays = Math.ceil((+returnDueAt - +pickupAt) / DAY);
+  let useDates;
+  if (input.useDates !== undefined) {
+    if (!Array.isArray(input.useDates) || !input.useDates.length || input.useDates.length > 90 || new Set(input.useDates).size !== input.useDates.length) invalid('Choose unique rental use days.');
+    const pickupDay = localKey(pickupAt, policy.timezone), returnDay = localKey(returnDueAt, policy.timezone);
+    useDates = input.useDates.map(day => {
+      if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(Date.parse(day + 'T12:00Z')) || new Date(day + 'T12:00Z').toISOString().slice(0, 10) !== day || day < pickupDay || day > returnDay) invalid('Every use day must be a real date between pickup and return.');
+      return day;
+    }).sort();
+  }
+  const days = useDates ? useDates.length : custodyDays;
+  if (custodyDays > policy.maximumDays + 2) invalid('Pickup and return are too far apart.');
   if (days < policy.minimumDays || days > policy.maximumDays) invalid(`Rentals must be ${policy.minimumDays}–${policy.maximumDays} days.`);
   if (!existing && (+pickupAt < +now + (allowImmediate ? -15 * 60000 : policy.minimumLeadHours * HOUR) || +pickupAt > +now + policy.maximumAdvanceDays * DAY)) invalid('Pickup is outside the allowed booking window.');
   slot(pickupAt, policy); slot(returnDueAt, policy);
   const eventAt = input.eventAt ? date(input.eventAt) : null;
   if (eventAt && (+eventAt < +pickupAt || +eventAt > +returnDueAt)) invalid('The event must fall within your rental period.');
-  return { pickupAt, returnDueAt, eventAt, days, blockedFrom: new Date(+pickupAt - policy.preparationHours * HOUR), blockedUntil: new Date(+returnDueAt + policy.cleaningHours * HOUR), balanceDueAt: new Date(+pickupAt - policy.balanceDueHours * HOUR) };
+  return { pickupAt, returnDueAt, eventAt, days, ...(useDates ? { useDates, custodyDays, billingBasis: 'USE_DAYS' } : {}), blockedFrom: new Date(+pickupAt - policy.preparationHours * HOUR), blockedUntil: new Date(+returnDueAt + policy.cleaningHours * HOUR), balanceDueAt: new Date(+pickupAt - policy.balanceDueHours * HOUR) };
 }
 function overlaps(a, b) { return +a.blockedFrom < +b.blockedUntil && +b.blockedFrom < +a.blockedUntil; }
 function quoteFingerprint(storeId, data) {
@@ -117,7 +130,8 @@ function listingRules(input) {
   if (packages.length > 10 || new Set(packages.map(p => p.days)).size !== packages.length) invalid('Use unique rental packages (maximum 10).');
   return { dailyRatePaise, depositPaise, packages, cleaningFeePaise: integer(input.cleaningFeePaise || 0, 'cleaning fee'), alterationFeePaise: integer(input.alterationFeePaise || 0, 'alteration fee'), ...advanceRules(input) };
 }
-function quote(lines, dates, policy, deliveryMode) {
+function quote(lines, dates, policy, deliveryMode, paymentPlan = 'ADVANCE') {
+  if (!(policy.paymentPlans || ['ADVANCE', 'FULL', 'PICKUP']).includes(paymentPlan)) invalid('This rental payment plan is unavailable.');
   if (!policy.deliveryModes.includes(deliveryMode)) invalid('This delivery method is unavailable.');
   const items = lines.map(({ listing, quantity }) => {
     integer(quantity, 'quantity', 1, 10);
@@ -125,7 +139,7 @@ function quote(lines, dates, policy, deliveryMode) {
     const rentPaise = (pack ? pack.pricePaise : listing.dailyRatePaise * dates.days) * quantity;
     const depositPaise = listing.depositPaise * quantity;
     const feesPaise = (listing.cleaningFeePaise + listing.alterationFeePaise) * quantity;
-    return { listingId: String(listing._id), productId: String(listing.productId), title: listing.title, quantity, rentPaise, depositPaise, feesPaise, ...(listing.fitting ? { fitting: { ...listing.fitting } } : {}), components: listing.components || (listing.requirements || []).map(r => ({ label: r.label, quantity: r.quantity * quantity })), rules: listingRules(listing) };
+    return { listingId: String(listing._id), productId: String(listing.productId), title: listing.title, ...(listing.image ? { image: listing.image } : {}), quantity, rentPaise, depositPaise, feesPaise, ...(listing.fitting ? { fitting: { ...listing.fitting } } : {}), components: listing.components || (listing.requirements || []).map(r => ({ label: r.label, quantity: r.quantity * quantity })), rules: listingRules(listing) };
   });
   const rentalPaise = items.reduce((n, i) => n + i.rentPaise + i.feesPaise, 0) + (deliveryMode === 'STORE_PICKUP' ? 0 : policy.deliveryFeePaise + policy.returnFeePaise);
   const depositPaise = items.reduce((n, i) => n + i.depositPaise, 0);
@@ -133,14 +147,16 @@ function quote(lines, dates, policy, deliveryMode) {
   const advanceFor = (amount, rules, quantity = 1) => rules.advanceMode === 'FIXED' ? Math.min(amount, rules.advanceAmountPaise * quantity) : Math.ceil(amount * rules.advancePercent / 100);
   const deliveryPaise = rentalPaise - items.reduce((n, i) => n + i.rentPaise + i.feesPaise, 0);
   const storePolicyPaise = deliveryPaise + items.filter(i => i.rules.advanceMode === 'STORE').reduce((n, i) => n + i.rentPaise + i.feesPaise, 0);
-  const advanceRentPaise = hasOverrides
+  const configuredAdvancePaise = hasOverrides
     ? items.filter(i => i.rules.advanceMode !== 'STORE').reduce((n, i) => n + advanceFor(i.rentPaise + i.feesPaise, i.rules, i.quantity), 0) + advanceFor(storePolicyPaise, policy)
     : advanceFor(rentalPaise, policy);
-  const depositDueNowPaise = policy.depositTiming === 'PICKUP' ? 0 : depositPaise;
+  const advanceRentPaise = paymentPlan === 'PICKUP' ? 0 : paymentPlan === 'FULL' ? rentalPaise : configuredAdvancePaise;
+  const depositTiming = paymentPlan === 'FULL' ? 'BOOKING' : paymentPlan === 'PICKUP' ? 'PICKUP' : policy.depositTiming || 'BOOKING';
+  const depositDueNowPaise = depositTiming === 'PICKUP' ? 0 : depositPaise;
   const totalPaise = rentalPaise + depositPaise;
   integer(totalPaise, 'booking total', 1, 100000000);
   const taxPaise = Math.round(rentalPaise * (policy.rentalTaxBasisPoints || 0) / (10000 + (policy.rentalTaxBasisPoints || 0)));
-  return { items, rentalPaise, depositPaise, totalPaise, advanceRentPaise, advanceMode: hasOverrides ? 'PER_ITEM' : policy.advanceMode || 'PERCENT', depositTiming: policy.depositTiming || 'BOOKING', depositDueNowPaise, dueNowPaise: advanceRentPaise + depositDueNowPaise, remainingPaise: totalPaise - advanceRentPaise - depositDueNowPaise, tax: { basisPoints: policy.rentalTaxBasisPoints || 0, taxablePaise: rentalPaise - taxPaise, taxPaise, serviceCode: policy.rentalServiceCode || '', priceMode: 'INCLUSIVE' }, deliveryMode, deliveryFeePaise: deliveryMode === 'STORE_PICKUP' ? 0 : policy.deliveryFeePaise, returnFeePaise: deliveryMode === 'STORE_PICKUP' ? 0 : policy.returnFeePaise, currency: 'INR', pricesIncludeApplicableTaxes: true };
+  return { items, rentalPaise, depositPaise, totalPaise, paymentPlan, advanceRentPaise, advanceMode: hasOverrides ? 'PER_ITEM' : policy.advanceMode || 'PERCENT', depositTiming, depositDueNowPaise, dueNowPaise: advanceRentPaise + depositDueNowPaise, remainingPaise: totalPaise - advanceRentPaise - depositDueNowPaise, tax: { basisPoints: policy.rentalTaxBasisPoints || 0, taxablePaise: rentalPaise - taxPaise, taxPaise, serviceCode: policy.rentalServiceCode || '', priceMode: 'INCLUSIVE' }, deliveryMode, deliveryFeePaise: deliveryMode === 'STORE_PICKUP' ? 0 : policy.deliveryFeePaise, returnFeePaise: deliveryMode === 'STORE_PICKUP' ? 0 : policy.returnFeePaise, currency: 'INR', pricesIncludeApplicableTaxes: true };
 }
 function finances(booking) {
   const entries = booking.ledger || [];

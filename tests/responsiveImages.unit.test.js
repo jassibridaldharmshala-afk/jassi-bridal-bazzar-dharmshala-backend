@@ -19,3 +19,12 @@ test('rental commercial values come only from explicit owner labels; ambiguous p
   assert.equal(extract('Daily rent: from 500\nDeposit: 1000-2000').value.dailyRatePaise, undefined);
 });
 test('owner fitting ranges remain optional, validate ranges and keep exact set contents', () => { assert.throws(() => fitting({ type: 'LEHENGA', measurements: { waistMin: 40, waistMax: 30 } }), /minimum/); assert.equal(fitting({ type: 'BRIDAL_SET', includedItems: 'Necklace, two earrings' }).includedItems, 'Necklace, two earrings'); assert.equal(fitting({ adjustable: true }).measurements, undefined); });
+
+test('generated display versions are already prepared and providers reuse the exact output', async () => {
+  const original = await sharp({ create: { width: 800, height: 400, channels: 4, background: '#bc637880' } }).png().toBuffer();
+  const versions = await responsivePhotoVariants(await preparePhotoFile({ buffer: original, mimetype: 'image/png', size: original.length }));
+  for (const version of versions) {
+    assert.equal(await preparePhotoFile(version), version);
+    assert.equal(version.photo.lossless, true);
+  }
+});

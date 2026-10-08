@@ -5,15 +5,34 @@ const { persistLocal, runUploadRequest } = require('./uploadRetryService');
 const crypto = require('node:crypto');
 const { preparePhotoFile, responsivePhotoVariants } = require('./photoCompressionService');
 
+// Bound encoded photo buffers and provider writes across concurrent requests,
+// while Sharp's separate global queue bounds decoded raster memory.
+let activeStores = 0;
+const waitingStores = [];
+async function withStorageSlot(work) {
+  if (activeStores < 2) activeStores++;
+  else await new Promise(resolve => waitingStores.push(resolve));
+  try { return await work(); }
+  finally {
+    const next = waitingStores.shift();
+    if (next) next();
+    else activeStores--;
+  }
+}
+
 async function storeFiles(req, context, { folder = req.query?.folder || 'products', fileUpload = false } = {}) {
   const incoming = req.files || [];
   const provider = r2.isR2Configured() ? 'r2' : cloud.isCloudinaryConfigured() ? 'cloudinary' : 'local';
   const result = [];
-  // Bounded parallelism; settle every started write before staging-file cleanup.
-  for (let start = 0; start < incoming.length; start += 1) {
-    const chunk = await Promise.allSettled(incoming.slice(start, start + 1).map((file, offset) => context.upload(file, start + offset, async options => {
+  // CPU decoding remains globally serial; overlap at most two storage writes.
+  // Settle every started write before staging-file cleanup on a partial failure.
+  for (let start = 0; start < incoming.length; start += 2) {
+    const chunk = await Promise.allSettled(incoming.slice(start, start + 2).map((file, offset) => context.upload(file, start + offset, options => withStorageSlot(async () => {
+      const photoIndex = start + offset + 1;
+      await context.progress?.({ phase: 'optimizing', photoIndex });
       file = await preparePhotoFile(file);
       const video = String(file.mimetype).startsWith('video/');
+      await context.progress?.({ phase: 'storing-original', photoIndex });
       const saved = provider === 'r2'
         ? await (video || fileUpload ? r2.uploadFileToR2 : r2.uploadImageToR2)(file, { ...options, folder })
         : provider === 'cloudinary'
@@ -22,7 +41,10 @@ async function storeFiles(req, context, { folder = req.query?.folder || 'product
       const metadata = { ...saved, provider, mimeType: file.mimetype, sizeBytes: file.size, ...(file.photo ? { width: file.photo.width, height: file.photo.height } : {}) };
       if (String(file.mimetype).startsWith('image/')) {
         metadata.variants = [];
-        for (const variant of await responsivePhotoVariants(file)) {
+        await context.progress?.({ phase: 'creating-displays', photoIndex });
+        const variants = await responsivePhotoVariants(file);
+        await context.progress?.({ phase: 'storing-displays', photoIndex });
+        for (const variant of variants) {
           const derivativeId = crypto.createHash('sha256').update(`${options.uploadId || saved.publicId}:display-v1:${variant.width}`).digest('hex');
           const derivativeOptions = { ...options, folder, uploadId: derivativeId };
           const display = provider === 'r2' ? await r2.uploadImageToR2(variant, derivativeOptions)
@@ -31,7 +53,7 @@ async function storeFiles(req, context, { folder = req.query?.folder || 'product
         }
       }
       return metadata;
-    })));
+    }))));
     const failure = chunk.find(item => item.status === 'rejected');
     if (failure) throw failure.reason;
     result.push(...chunk.map(item => item.value));
