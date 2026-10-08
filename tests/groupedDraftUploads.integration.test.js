@@ -51,7 +51,7 @@ test('mixed 4/6/2 product groups survive an interrupted save and receipt replay'
     const replay = await request('/api/admin/product-drafts/bulk-upload', { method: 'POST', token, headers: { 'Idempotency-Key': key }, body: { resumeUpload: true } });
     assert.deepEqual(replay.data.data.drafts.map((draft) => draft._id), created.data.data.drafts.map((draft) => draft._id));
     assert.equal(await ProductDraft.countDocuments(), 3);
-    assert.equal(mediaWrites, 12);
+    assert.equal(mediaWrites, 24);
     const list = await request('/api/admin/product-drafts', { token });
     assert.equal(list.data.meta.photoGrouping.version, 1);
   } finally {

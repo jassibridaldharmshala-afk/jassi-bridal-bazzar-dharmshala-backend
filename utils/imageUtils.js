@@ -82,7 +82,7 @@ function sanitizeProductImages(images = []) {
   if (!Array.isArray(images)) return images;
   return images.map((image) => {
     if (!image || typeof image !== 'object') return image;
-    return { ...image, url: sanitizeStoredImageUrl(image.url), ...(image.background ? { background: {
+    return { ...image, url: sanitizeStoredImageUrl(image.url), ...(image.variants ? { variants: image.variants.map(variant => ({ ...variant, url: sanitizeStoredImageUrl(variant.url) })) } : {}), ...(image.background ? { background: {
       ...image.background,
       original: { ...image.background.original, url: sanitizeStoredImageUrl(image.background.original?.url) },
       edited: { ...image.background.edited, url: sanitizeStoredImageUrl(image.background.edited?.url) },
@@ -104,7 +104,7 @@ function normalizeImageForResponse(image, req) {
   if (!rewritten) {
     return { ...(typeof image === 'object' && image ? image : {}), url: placeholderUrl(req), isPlaceholder: true, primary: Boolean(image?.primary) };
   }
-  return typeof image === 'string' ? { url: rewritten } : { ...image, url: rewritten, ...(image.background ? { background: {
+  return typeof image === 'string' ? { url: rewritten } : { ...image, url: rewritten, ...(image.variants ? { variants: image.variants.map(variant => ({ ...variant, url: rewriteImageUrl(variant.url, req) })) } : {}), ...(image.background ? { background: {
     ...image.background,
     original: { ...image.background.original, url: rewriteImageUrl(image.background.original?.url, req) },
     edited: { ...image.background.edited, url: rewriteImageUrl(image.background.edited?.url, req) },
@@ -135,6 +135,8 @@ function normalizeProductPayload(data = {}) {
     payload.images = images.map((image) => ({
       url: image.url,
       publicId: image.publicId,
+      ...(image.variants ? { variants: image.variants } : {}),
+      ...Object.fromEntries(['width', 'height', 'mimeType', 'sizeBytes', 'provider'].filter(key => image[key] !== undefined).map(key => [key, image[key]])),
       ...(image.background ? { background: image.background } : {}),
       primary: Boolean(image.primary),
       ...(image.sourceFrame ? { sourceFrame: image.sourceFrame } : {}),

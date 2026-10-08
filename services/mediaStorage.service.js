@@ -55,7 +55,14 @@ async function uploadGeneratedImage(file, options = {}) {
   const uploaded = provider === 'r2'
     ? await uploadFileToR2(file, { ...options, folder: options.folder || 'reel-imports/candidates' })
     : await uploadImage(file, { ...options, folder: options.folder || 'reel-imports/candidates' });
-  return { provider, storageKey: uploaded.publicId, url: uploaded.url };
+  const variants = [];
+  for (const variant of options.responsive === false ? [] : await require('./photoCompressionService').responsivePhotoVariants(file)) {
+    const uploadId = require('node:crypto').createHash('sha256').update(uploaded.publicId + ':display-v1:' + variant.width).digest('hex');
+    const display = provider === 'r2' ? await uploadFileToR2(variant, { ...options, folder: options.folder || 'reel-imports/candidates', uploadId })
+      : await uploadImage(variant, { ...options, folder: options.folder || 'reel-imports/candidates', uploadId });
+    variants.push({ ...display, provider, width: variant.width, height: variant.height, mimeType: variant.mimetype, sizeBytes: variant.size });
+  }
+  return { provider, storageKey: uploaded.publicId, url: uploaded.url, variants };
 }
 
 async function objectExists({ provider, storageKey, url }) {

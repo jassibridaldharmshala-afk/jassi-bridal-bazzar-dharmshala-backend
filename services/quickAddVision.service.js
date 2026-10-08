@@ -1,70 +1,28 @@
-const fs = require('fs');
 const path = require('path');
 const { generateGeminiJson } = require('./geminiJson.service');
 const { normalizeContext } = require('./productImportContext.service');
 const { automaticSizing, suggestionAttributes, VISUAL_ATTRIBUTES } = require('./productSuggestionPolicy');
 
-const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 function isVisionEnabled() {
   return Boolean(String(process.env.GEMINI_API_KEY || '').trim());
 }
 
-function mimeFromName(name = '') {
-  const ext = path.extname(String(name)).toLowerCase();
-  if (ext === '.png') return 'image/png';
-  if (ext === '.webp') return 'image/webp';
-  if (ext === '.gif') return 'image/gif';
-  return 'image/jpeg';
+async function readImageFile(filePath = '') {
+  const resolved = path.resolve(String(filePath));
+  const handle = await require('node:fs/promises').open(resolved, 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw new Error('Photo is too large to analyze.');
+    const source = await handle.readFile();
+    const photo = await require('./photoCompressionService').prepareAnalysisPhotoBuffer(source);
+    return { mimeType: photo.mimeType, data: photo.buffer.toString('base64') };
+  } finally { await handle.close(); }
 }
-
-function localUploadPath(imageUrl = '') {
-  const raw = String(imageUrl || '').split('?')[0];
-  const match = raw.match(/\/uploads\/([^/?#]+)$/i);
-  if (!match) return '';
-  return path.join(__dirname, '..', 'uploads', match[1]);
-}
-
-function readImageFile(filePath = '') {
-  const resolved = path.resolve(String(filePath || ''));
-  if (!resolved || !fs.existsSync(resolved)) throw new Error('Product image could not be read');
-  const buffer = fs.readFileSync(resolved);
-  if (!buffer.length) throw new Error('Product image is empty');
-  if (buffer.length > MAX_IMAGE_BYTES) throw new Error('Image is too large to analyze');
-  return { mimeType: mimeFromName(resolved), data: buffer.toString('base64') };
-}
-
-function resolveFetchUrl(imageUrl = '') {
-  const raw = String(imageUrl || '').trim();
-  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
-
-  // Prefer the running local API for relative /uploads paths.
-  // PUBLIC_API_URL may point at production and would fail for local files.
-  const localOrigin = `http://127.0.0.1:${process.env.SERVER_PORT || 5000}`;
-  const configured = String(process.env.PUBLIC_API_URL || '').replace(/\/$/, '');
-  const origin = /localhost|127\.0\.0\.1/i.test(configured) || !configured ? (configured || localOrigin) : localOrigin;
-  return `${origin}${raw.startsWith('/') ? '' : '/'}${raw}`;
-}
-
-async function readImage(imageUrl = '') {
-  const raw = String(imageUrl || '').trim();
-  if (!raw) throw new Error('Image is required');
-
-  const diskPath = localUploadPath(raw);
-  if (diskPath && fs.existsSync(diskPath)) {
-    const buffer = fs.readFileSync(diskPath);
-    if (buffer.length > MAX_IMAGE_BYTES) throw new Error('Image is too large to analyze');
-    return { mimeType: mimeFromName(diskPath), data: buffer.toString('base64') };
-  }
-
-  const absolute = resolveFetchUrl(raw);
-  const response = await fetch(absolute, { signal: AbortSignal.timeout(12000) });
-  if (!response.ok) throw new Error('Could not read the uploaded photo');
-  const mimeType = (response.headers.get('content-type') || mimeFromName(absolute)).split(';')[0];
-  if (!mimeType.startsWith('image/')) throw new Error('Only product photos can be analyzed');
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length > MAX_IMAGE_BYTES) throw new Error('Image is too large to analyze');
-  return { mimeType, data: buffer.toString('base64') };
+async function readImage(imageUrl) {
+  const source = await require('./productSmartFillMedia').readProductPhoto(imageUrl, AbortSignal.timeout(12000));
+  const photo = await require('./photoCompressionService').prepareAnalysisPhotoBuffer(source.buffer);
+  return { mimeType: photo.mimeType, data: photo.buffer.toString('base64') };
 }
 
 function clip(value, max) {
@@ -227,7 +185,11 @@ exports.analyzeQuickAddImage = async ({ imageUrl, imageUrls, categories = [], su
   if (!isVisionEnabled()) return analyzeImages({ images: [], categories, subcategories });
   if (imageUrls !== undefined && (!Array.isArray(imageUrls) || imageUrls.length > 6 || imageUrls.some(url => typeof url !== 'string' || url.length > 4096))) throw new Error('Choose up to six uploaded product photos.');
   const urls = [...new Set(imageUrls?.length ? imageUrls : [imageUrl])];
-  const images = await Promise.all(urls.map(url => require('./productSmartFillMedia').readProductPhoto(url, AbortSignal.timeout(12000))));
+  const images = [];
+  for (const url of urls) {
+    const source = await require('./productSmartFillMedia').readProductPhoto(url, AbortSignal.timeout(12000));
+    images.push(await require('./photoCompressionService').prepareAnalysisPhotoBuffer(source.buffer));
+  }
   if (images.reduce((total, item) => total + item.buffer.length, 0) > 14 * 1024 * 1024) throw new Error('Choose smaller photos for analysis; the selected photos must total less than 14 MB.');
   return analyzeImages({ images: images.map(image => ({ mimeType: image.mimeType, data: image.buffer.toString('base64') })), categories, subcategories, structure, attributes });
 };
@@ -241,7 +203,7 @@ exports.analyzeReelCandidateImages = async ({ imageUrls = [], categories = [], s
 
 exports.analyzeReelCandidateFiles = async ({ filePaths = [], categories = [], subcategories = [], structure = {}, attributes = [] } = {}) => {
   if (!isVisionEnabled()) return analyzeImages({ images: [], categories, subcategories });
-  const images = (Array.isArray(filePaths) ? filePaths : []).slice(0, 3).map(readImageFile);
+  const images = await Promise.all((Array.isArray(filePaths) ? filePaths : []).slice(0, 3).map(readImageFile));
   if (!images.length) throw new Error('No candidate photos are available for smart analysis.');
   return analyzeImages({ images, categories, subcategories, structure, attributes });
 };

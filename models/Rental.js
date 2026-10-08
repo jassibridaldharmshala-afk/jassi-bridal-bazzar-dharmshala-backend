@@ -24,6 +24,7 @@ const Listing = define('RentalListing', {
   fitting: { type: Schema.Types.Mixed, default: undefined },
 }, [[{ storeId: 1, productId: 1, active: 1 }, {}]]);
 const Asset = define('RentalAsset', {
+  registrationBatchId: String, registrationFingerprint: String,
   productId: { type: Schema.Types.ObjectId, ref: 'Product' }, variantId: String, size: String, colour: String,
   saleConversion: Schema.Types.Mixed,
   poolKey: { type: String, required: true, maxlength: 80 }, code: { type: String, required: true, maxlength: 80 },
@@ -32,7 +33,7 @@ const Asset = define('RentalAsset', {
   fitProfile: { type: Schema.Types.Mixed, default: undefined },
   status: { type: String, enum: ['READY', 'OUT', 'INSPECTION', 'CLEANING', 'REPAIR', 'LOST', 'RETIRED'], default: 'READY' },
   currentBookingId: Schema.Types.ObjectId, returnDueAt: Date, revision: { type: Number, default: 0 },
-}, [[{ storeId: 1, code: 1 }, { unique: true }], [{ storeId: 1, poolKey: 1, status: 1 }, {}]]);
+}, [[{ storeId: 1, code: 1 }, { unique: true }], [{ storeId: 1, poolKey: 1, status: 1 }, {}], [{ storeId: 1, registrationBatchId: 1 }, {}]]);
 const Reservation = define('RentalReservation', {
   assetId: { type: Schema.Types.ObjectId, ref: 'RentalAsset', required: true }, bookingId: Schema.Types.ObjectId,
   blockedFrom: { type: Date, required: true }, blockedUntil: { type: Date, required: true },

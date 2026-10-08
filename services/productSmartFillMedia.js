@@ -5,7 +5,7 @@ const dns = require('node:dns/promises');
 const { publicAddress } = require('../modules/social-product-import/socialImport.network');
 const { ApiError } = require('../utils/apiError');
 
-const MAX_BYTES = 4 * 1024 * 1024;
+const MAX_BYTES = require('./photoCompressionService').PHOTO_SOURCE_MAX_BYTES;
 const uploads = path.resolve(__dirname, '../uploads');
 const blocked = () => new ApiError('SMART_FILL_MEDIA', 'Choose photos uploaded through this product form. Re-upload any photo that is no longer available.');
 const parseUrl = (value) => { try { return new URL(value); } catch { return null; } };

@@ -86,8 +86,10 @@ test('strict production validation rejects weak secrets and incomplete required 
   });
 });
 
-test('OTP_MODE=demo is the default and is distinct from production mode', () => {
-  withEnv({ OTP_MODE: undefined }, () => {
+test('local OTP demo is distinct from production and production never implicitly uses demo', () => {
+  for (const mode of [undefined, '', 'invalid']) withEnv({ NODE_ENV: 'production', OTP_MODE: mode }, () => assert.equal(isDemoOtpMode(), false));
+  withEnv({ NODE_ENV: 'production', OTP_MODE: 'demo' }, () => assert.equal(isDemoOtpMode(), true));
+  withEnv({ NODE_ENV: 'development', OTP_MODE: undefined }, () => {
     assert.equal(isDemoOtpMode(), true);
   });
   withEnv({ OTP_MODE: 'production' }, () => {

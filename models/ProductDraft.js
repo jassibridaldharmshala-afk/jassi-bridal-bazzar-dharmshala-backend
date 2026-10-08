@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const storeIdPlugin = require('./plugins/storeId');
 
 const imageSchema = new mongoose.Schema({
+  ...require('./responsiveImageFields'),
   url: String,
   publicId: String,
   background: { type: require('./imageBackgroundSchema'), default: undefined },

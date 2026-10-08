@@ -1,3 +1,4 @@
+const { assertStoreCanAcceptOrders } = require('../middleware/storeMiddleware');
 const crypto = require('crypto');
 const { logAudit } = require('../services/auditService');
 const Order = require('../models/Order');
@@ -10,7 +11,7 @@ const { createRazorpayOrder, isRazorpayConfigured } = require('../services/razor
 const { verifyRazorpaySignature } = require('../utils/paymentUtils');
 const { runInTransaction } = require('../utils/transaction');
 const { ApiError, notFound } = require('../utils/apiError');
-const { assertCheckoutReady, assertShippingAddress, cancelOrderInternal } = require('./orderController');
+const { assertCheckoutReady, assertShippingAddress, cancelOrderInternal, publicCustomerOrder } = require('./orderController');
 const { buildPersistedOrderFields } = require('../services/orderSnapshotService');
 const { notifyLater } = require('../services/notificationService');
 const { readAttribution } = require('../utils/attribution');
@@ -206,6 +207,7 @@ async function createPaymentOrder(req, res) {
     if (existing.paymentStatus === 'Pending' && existing.razorpayOrderId) return res.json(paymentOrderHandle(existing));
     throw new ApiError('DUPLICATE_REQUEST', 'This payment attempt has ended. Return to checkout and try again.', { statusCode: 409 });
   }
+  assertStoreCanAcceptOrders(req.store);
   await assertCustomerCanCheckout({ storeId: req.store?._id, userId: req.user?._id, paymentMethod: req.body?.paymentMethod || 'UPI' });
 
   if (!isRazorpayConfigured()) {
@@ -408,7 +410,7 @@ async function verifyPayment(req, res) {
     }
   }
 
-  return res.json({ success: true, alreadyPaid, order });
+  return res.json({ success: true, alreadyPaid, order: publicCustomerOrder(order) });
 }
 
 /**
@@ -645,7 +647,7 @@ async function recordPaymentFailure(req, res) {
   if (!order) return res.status(202).json({ success: false, message: reason, order: null });
 
   if (['Paid', 'Refunded'].includes(order.paymentStatus)) {
-    return res.status(409).json({ success: false, code: 'DUPLICATE_REQUEST', message: order.paymentStatus === 'Refunded' ? 'This payment has already been refunded' : 'Order is already paid', order });
+    return res.status(409).json({ success: false, code: 'DUPLICATE_REQUEST', message: order.paymentStatus === 'Refunded' ? 'This payment has already been refunded' : 'Order is already paid', order: publicCustomerOrder(order) });
   }
 
   const updated = await failUnpaidOrder(order, reason, { req, source: 'CUSTOMER' });
@@ -655,7 +657,7 @@ async function recordPaymentFailure(req, res) {
     userId: req.user._id,
     orderId: order._id,
   });
-  return res.status(202).json({ success: false, message: reason, order: updated || order });
+  return res.status(202).json({ success: false, message: reason, order: publicCustomerOrder(updated || order) });
 }
 
 async function failUnpaidOrder(order, reason, { req, source = 'SYSTEM' } = {}) {

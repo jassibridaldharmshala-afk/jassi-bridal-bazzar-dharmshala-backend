@@ -62,6 +62,7 @@ test('home launches independent reads before the theme completes and degrades on
   const pending = getMobileHome({ query: { format: 'compact' }, tenantFilter: {} }, {
     setHeader(key, value) { headers[key] = value; }, vary() {}, json(data) { body = data; },
   }, error => { throw error; });
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(body, undefined, 'theme is still pending');
   assert.equal(started.filter(label => label === 'products').length, 9);
   assert.ok(started.includes('categories'));

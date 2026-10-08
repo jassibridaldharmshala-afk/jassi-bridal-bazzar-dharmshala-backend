@@ -37,7 +37,7 @@ async function download(value, destination, hop = 0) {
       if ([301, 302, 303, 307, 308].includes(response.statusCode)) { response.resume(); return resolve({ redirect: new URL(response.headers.location, url).href }); }
       if (response.statusCode !== 200) { response.resume(); return reject(fail('A product photo could not be downloaded.')); }
       let bytes = 0; const chunks = [];
-      response.on('data', chunk => { bytes += chunk.length; if (bytes > 12 * 1024 * 1024) response.destroy(fail('Product photos must be smaller than 12 MB.')); else chunks.push(chunk); });
+      response.on('data', chunk => { bytes += chunk.length; if (bytes > 20 * 1024 * 1024) response.destroy(fail('Product photos must be smaller than 20 MB.')); else chunks.push(chunk); });
       response.on('error', reject); response.on('end', () => resolve({ bytes: Buffer.concat(chunks) }));
     });
     const timer = setTimeout(() => request.destroy(fail('Media download timed out.')), 20000);
@@ -58,7 +58,7 @@ async function photoFile(value, destination) {
   const root = await fs.realpath(uploads);
   if (!file || !file.startsWith(root + path.sep)) throw fail('Product photo not found.');
   const stat = await fs.stat(file);
-  if (!stat.isFile() || stat.size > 12 * 1024 * 1024) throw fail('Product photo is too large.');
+  if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw fail('Product photo is too large.');
   await fs.copyFile(file, destination);
 }
 async function verifyImage(file) {
@@ -82,10 +82,10 @@ function run(args, cwd) {
 }
 async function persist(file, video, identity) {
   if (!identity) throw fail('Save a post before generating its media.');
-  return (await persistGeneratedFile({ path: file, mimetype: video ? 'video/mp4' : 'image/jpeg', originalname: video ? 'product-reel.mp4' : 'product-photo.jpg' }, identity, { video, folder: 'social-studio' })).url;
+  return (await persistGeneratedFile({ path: file, mimetype: video ? 'video/mp4' : 'image/jpeg', originalname: video ? 'product-reel.mp4' : 'product-photo.jpg' }, identity, { video, responsive: false, folder: 'social-studio' })).url;
 }
 async function prepare(post, video = false) {
-  const recipe = ['social-render-v3-photo100kb', storageFingerprint(), process.env.PUBLIC_API_URL || '', post.images.slice(0, 6), ...(video ? [post.productName || '', post.productPrice ?? null] : [])];
+  const recipe = ['social-render-v4-lossless-photo', storageFingerprint(), process.env.PUBLIC_API_URL || '', post.images.slice(0, 6), ...(video ? [post.productName || '', post.productPrice ?? null] : [])];
   const identity = { namespace: video ? 'social-video' : 'social-photos', ownerId: post._id, storeId: post.storeId, slot: 'recipe', recipe };
   const key = generatedUploadId(identity);
   const checkpoint = async (slot, url) => {

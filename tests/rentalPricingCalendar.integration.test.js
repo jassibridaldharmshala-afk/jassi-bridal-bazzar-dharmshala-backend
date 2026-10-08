@@ -1,3 +1,4 @@
+require('./rentalPaymentFixture');
 const { test, before, after, beforeEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -23,7 +24,7 @@ before(async () => {
 });
 after(async () => { await stopTestEnvironment(); mock.restoreAll(); });
 beforeEach(async () => {
-  await resetDatabase(); store = await ensureDefaultStore(); customer = await createCustomer(); admin = await createAdmin();
+  await resetDatabase(); store = await ensureDefaultStore(); await require('./rentalPaymentFixture').configure(store); customer = await createCustomer(); admin = await createAdmin();
   product = await createProduct({ storeId: store._id, sku: op(), commerceMode: 'SALE_AND_RENTAL', sizingMode: 'free-size', sizes: [] });
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY } }, admin.user._id);
   await S.saveAsset(store, { productId: String(product._id), poolKey: 'bridal-piece', code: 'BRIDAL-01', label: 'Physical outfit' });

@@ -8,10 +8,11 @@ const fail = (message, code = 'VALIDATION_ERROR') => { throw new ApiError(code, 
 const unavailable = error => ['OUT_OF_STOCK', 'NOT_FOUND'].includes(error.errorCode || error.code);
 async function availability(store, query, { counter = false } = {}) {
   const configuration = await S().readConfiguration(store);
+  if (configuration.mode === 'SALE_ONLY') fail('This shop has not enabled rentals.', 'CHECKOUT_RESTRICTED');
   if (!configuration.policy.dateFirstEnabled) fail('Date-first rental shopping is disabled.', 'CHECKOUT_RESTRICTED');
   const dates = A.schedule(query, configuration.policy, new Date(), { allowImmediate: counter });
   const quantity = A.integer(Number(query.quantity || 1), 'quantity', 1, 10);
-  const data = await S().catalogue(store, query);
+  const data = await S().catalogue(store, query, { all: true });
   const rows = new Array(data.rows.length);
   let cursor = 0;
   // Four concurrent read-only checks keep mobile date searches responsive without flooding the database.
@@ -30,10 +31,13 @@ async function availability(store, query, { counter = false } = {}) {
     }
   }));
   rows.sort((a, b) => (a.availability === 'AVAILABLE' ? 0 : 1) - (b.availability === 'AVAILABLE' ? 0 : 1));
-  return { ...data, schedule: dates, rows, availabilityIsAdvisory: true };
+  const filtered = query.availableOnly === 'true' ? rows.filter(row => row.availability === 'AVAILABLE') : rows;
+  return { ...data, total: filtered.length, pages: Math.ceil(filtered.length / 30), schedule: dates,
+    rows: filtered.slice((data.page - 1) * 30, data.page * 30), availabilityIsAdvisory: true };
 }
 async function alternatives(store, listingId, query, { counter = false } = {}) {
   const config = await S().readConfiguration(store);
+  if (config.mode === 'SALE_ONLY') fail('This shop has not enabled rentals.', 'CHECKOUT_RESTRICTED');
   if (!config.policy.dateFirstEnabled) fail('Date-first shopping is disabled.');
   const listing = await M.Listing.findOne({ storeId: store._id, _id: A.id(listingId), active: true }).lean();
   if (!listing) fail('Rental offer not found.', 'NOT_FOUND');
@@ -52,8 +56,9 @@ async function alternatives(store, listingId, query, { counter = false } = {}) {
       nextDates.push({ schedule: quoted.schedule, totalPaise: quoted.quote.totalPaise });
     } catch (error) { if (!unavailable(error) && (error.errorCode || error.code) !== 'VALIDATION_ERROR') throw error; }
   }
-  const product = await Product.findOne({ _id: listing.productId, storeId: store._id }).select('category').lean();
-  const data = await S().catalogue(store, { ...query, page: 1 });
+  const product = await Product.findOne({ $and: [{ _id: listing.productId }, store.isDefault ? require('./storeService').defaultStoreFilter(store._id) : { storeId: store._id }] }).select('category').lean();
+  const { productId: _productId, listingIds: _listingIds, ...preferences } = query;
+  const data = await S().catalogue(store, { ...preferences, ...(product?.category ? { category: String(product.category) } : {}), page: 1 }, { all: true });
   for (const other of data.rows.filter(row => String(row._id) !== String(listing._id) && String(row.product?.category || '') === String(product?.category || '') && (!listing.size || row.size === listing.size)).slice(0, 6)) {
     try {
       const quoted = await S().publicQuote(store, { pickupAt: dates.pickupAt.toISOString(), returnDueAt: dates.returnDueAt.toISOString(), items: [{ listingId: String(other._id), quantity }], deliveryMode: query.deliveryMode || 'STORE_PICKUP' }, { counter });
@@ -64,8 +69,9 @@ async function alternatives(store, listingId, query, { counter = false } = {}) {
 }
 async function slots(store, query, { counter = false } = {}) {
   const config = await S().readConfiguration(store);
+  if (config.mode === 'SALE_ONLY') fail('This shop has not enabled rentals.', 'CHECKOUT_RESTRICTED');
   if (!config.policy.dateFirstEnabled) fail('Date-first shopping is disabled.');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(query.date || '') || !Number.isFinite(Date.parse(query.date + 'T12:00Z'))) fail('Choose a valid shop date.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(query.date || '') || !Number.isFinite(Date.parse(query.date + 'T12:00Z')) || new Date(query.date + 'T12:00Z').toISOString().slice(0, 10) !== query.date) fail('Choose a valid shop date.');
   const p = config.policy, [h, m] = p.pickupStart.split(':').map(Number), [eh, em] = p.pickupEnd.split(':').map(Number), rows = [];
   for (let minute = h * 60 + m; minute < eh * 60 + em; minute += p.slotMinutes) {
     const time = String(Math.floor(minute / 60)).padStart(2, '0') + ':' + String(minute % 60).padStart(2, '0');

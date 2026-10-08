@@ -20,6 +20,10 @@ services:
         value: "true"
       - key: MONGO_URI
         sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
       - key: JWT_EXPIRES_IN
         value: 15m
       - key: JWT_ADMIN_EXPIRES_IN
@@ -35,18 +39,16 @@ services:
       - key: AUTH_COOKIE_SECURE
         value: "true"
       - key: PUBLIC_API_URL
-        value: https://jassi-general-store-backend-1.onrender.com
+        sync: false
       - key: CLIENT_ORIGINS
         sync: false
       - key: FRONTEND_URL
         sync: false
       - key: ADMIN_PHONE_NUMBERS
         sync: false
-      # Temporary team-demo login. Disable the owner switch before live use.
+      # Configure an actual SMS provider before accepting customer sign-ins.
       - key: OTP_MODE
-        value: demo
-      - key: DEMO_OTP
-        value: "123456"
+        value: production
       - key: ALLOW_HOSTED_OWNER_DEMO
         value: "false"
       - key: OTP_EXPIRY_MINUTES
@@ -67,6 +69,18 @@ services:
       - key: RAZORPAY_KEY_ID
         sync: false
       - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CONTROL_PLANE_URL
+        sync: false
+      - key: CLIENT_INSTALLATION_ID
+        sync: false
+      - key: CLIENT_LICENSE_KEY
+        sync: false
+      - key: LICENSE_SIGNING_PUBLIC_KEY
         sync: false
       - key: R2_ACCOUNT_ID
         sync: false

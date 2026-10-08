@@ -15,6 +15,7 @@ const DEFAULT_POLICY = Object.freeze({
   slotCapacity: 5, closedWeekdays: [], closedDates: [],
   deliveryModes: ['STORE_PICKUP'], deliveryFeePaise: 0, returnFeePaise: 0,
   cancellationRules: [{ beforeHours: 72, retainPercent: 0 }, { beforeHours: 0, retainPercent: 100 }],
+  faqs: [],
   terms: 'Return every component by the agreed deadline. Deposit settlement follows inspection. No charge is deducted without an itemised assessment.',
   ownerEmail: false, ownerWhatsapp: false, customerEmail: false, customerWhatsapp: false,
   whatsappTemplate: '', whatsappLanguage: 'en',
@@ -37,6 +38,8 @@ function operation(value) { if (!/^[A-Za-z0-9_-]{10,100}$/.test(value || '')) in
 function date(value) {
   // Require an explicit offset: a browser's local timezone must not decide a booking.
   if (typeof value !== 'string' || !/(Z|[+-]\d{2}:\d{2})$/.test(value) || !Number.isFinite(Date.parse(value))) invalid('Use an ISO date and time including its timezone.');
+  const day = value.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value) || new Date(day + 'T12:00Z').toISOString().slice(0, 10) !== day) invalid('Choose a real calendar date.');
   return new Date(value);
 }
 function localParts(value, timezone) {
@@ -72,6 +75,8 @@ function validatePolicy(input = {}, { existing = false } = {}) {
   if (!Array.isArray(p.cancellationRules) || !p.cancellationRules.length || p.cancellationRules.length > 10) invalid('Add cancellation rules.');
   p.cancellationRules = p.cancellationRules.map(rule => { if (!rule || typeof rule !== 'object') invalid('Cancellation rule is invalid.'); return { beforeHours: integer(rule.beforeHours, 'cancellation hours', 0, 8760), retainPercent: integer(rule.retainPercent, 'retained percentage', 0, 100) }; }).sort((a, b) => b.beforeHours - a.beforeHours);
   if (!p.cancellationRules.some(r => r.beforeHours === 0)) invalid('Include a cancellation rule for zero hours notice.');
+  if (!Array.isArray(p.faqs) || p.faqs.length > 20) invalid('Add up to 20 rental FAQs.');
+  p.faqs = p.faqs.map(row => { if (!row || typeof row !== 'object') invalid('Enter a rental FAQ question and answer.'); const question = text(row.question, 200), answer = text(row.answer, 2000); if (!question || !answer) invalid('Complete each rental FAQ question and answer.'); return { question, answer }; });
   p.terms = text(p.terms, 5000); if (!p.terms) invalid('Rental terms are required.');
   for (const key of ['ownerEmail', 'ownerWhatsapp', 'customerEmail', 'customerWhatsapp']) if (typeof p[key] !== 'boolean') invalid('Choose valid notification switches.');
   p.whatsappTemplate = text(p.whatsappTemplate, 100); p.whatsappLanguage = text(p.whatsappLanguage, 10);

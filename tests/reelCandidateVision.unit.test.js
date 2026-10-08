@@ -80,9 +80,10 @@ test('photo-only reel analysis uses supported model fallbacks and structured ima
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   });
-  const fs = require('node:fs'); const realExists = fs.existsSync; const realRead = fs.readFileSync;
-  t.mock.method(fs, 'existsSync', file => String(file).endsWith('fixture-photo.jpg') || realExists(file));
-  t.mock.method(fs, 'readFileSync', (file, ...args) => String(file).endsWith('fixture-photo.jpg') ? Buffer.from('synthetic image bytes') : realRead(file, ...args));
+  const fs = require('node:fs/promises'), os = require('node:os'), path = require('node:path');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'reel-photo-')), photoPath = path.join(dir, 'fixture-photo.jpg');
+  await fs.writeFile(photoPath, await require('sharp')({ create: { width: 10, height: 10, channels: 3, background: 'blue' } }).jpeg().toBuffer());
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const requested = [];
   t.mock.method(global, 'fetch', async (url, options) => {
     requested.push(url);
@@ -93,7 +94,7 @@ test('photo-only reel analysis uses supported model fallbacks and structured ima
     if (url.includes('retired-photo-model')) return { ok: false, status: 404, json: async () => ({}) };
     return { ok: true, status: 200, json: async () => ({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify({ name: 'Blue Saree', categoryName: 'Sarees', colors: ['Blue'] }) }] } }] }) };
   });
-  const result = await analyzeCandidateFiles({ groupNumber: 1, filePaths: ['fixture-photo.jpg'], categories: [{ _id: 'sarees', name: 'Sarees' }] });
+  const result = await analyzeCandidateFiles({ groupNumber: 1, filePaths: [photoPath], categories: [{ _id: 'sarees', name: 'Sarees' }] });
   assert.equal(result.analysis.status, 'completed'); assert.equal(result.suggestions.name, 'Blue Saree');
   assert.equal(result.analysis.model, 'gemini-flash-latest'); assert.equal(requested.length, 2);
   assert.equal(result.suggestions.stock, undefined); assert.equal(result.suggestions.price, undefined);

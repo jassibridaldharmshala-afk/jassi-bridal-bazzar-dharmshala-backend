@@ -1,7 +1,4 @@
 const fs = require('fs/promises');
-const fsSync = require('fs');
-const path = require('path');
-const multer = require('multer');
 const Order = require('../models/Order');
 const ReturnExchange = require('../models/ReturnExchange');
 const InventoryItem = require('../models/InventoryItem');
@@ -11,28 +8,21 @@ const { ApiError, notFound } = require('../utils/apiError');
 const { andFilter } = require('../services/storeService');
 const { getStoreSettings } = require('../services/paymentSettingsService');
 const { logAudit } = require('../services/auditService');
-const { isR2Configured } = require('../services/r2Upload');
-const { isCloudinaryConfigured } = require('../services/cloudinaryUpload');
-const { isLocalRequest } = require('../utils/imageUtils');
-const { uploadMedia } = require('../services/mediaUploadService');
 const { assessInspection, cleanCode, generateCode, protectionSettings, refreshCustomerRisk } = require('../services/fraudProtectionService');
 
 const imageTypes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const videoTypes = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
-const uploadDir = path.join(__dirname, '..', 'uploads');
-fsSync.mkdirSync(uploadDir, { recursive: true });
-const upload = multer({
-  storage: multer.diskStorage({ destination: (_req, _file, cb) => cb(null, uploadDir), filename: (_req, file, cb) => cb(null, `${require('crypto').randomUUID()}-${String(file.originalname || 'evidence').replace(/[^a-z0-9.]+/gi, '-').toLowerCase()}`) }),
-  fileFilter: (_req, file, cb) => imageTypes.has(file.mimetype) || videoTypes.has(file.mimetype) ? cb(null, true) : cb(new Error('Only JPG, PNG, WEBP, MP4, MOV and WEBM evidence files are allowed.')),
-  limits: { fileSize: 50 * 1024 * 1024, files: 8 },
-});
+// Staged labels and customer evidence must never enter the public uploads tree.
+const upload = require('../middleware/photoUploadMiddleware').createPhotoUpload({ privateEvidence: true, allowVideo: true, maxFileBytes: 50 * 1024 * 1024 });
 
 exports.evidenceUploadMiddleware = (req, res, next) => upload.array('files', 8)(req, res, next);
 
 async function cleanup(files = []) { await Promise.all(files.map(file => fs.unlink(file.path).catch(() => null))); }
 
 async function validMagic(file) {
-  const bytes = await fs.readFile(file.path).then(value => value.subarray(0, 16));
+  const handle = await fs.open(file.path, 'r');
+  const bytes = Buffer.alloc(16);
+  try { await handle.read(bytes, 0, 16, 0); } finally { await handle.close(); }
   if (imageTypes.has(file.mimetype)) {
     return (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)
       || (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
@@ -46,38 +36,13 @@ exports.uploadEvidence = asyncHandler(async (req, res) => {
   if (!req.files?.length && req.body?.resumeUpload !== true) throw new ApiError('VALIDATION_ERROR', 'Choose at least one evidence file.');
   try {
     for (const file of req.files || []) {
-      if (imageTypes.has(file.mimetype) && file.size > 5 * 1024 * 1024) throw new ApiError('VALIDATION_ERROR', 'Each evidence photo must be 5 MB or smaller.');
+      if (imageTypes.has(file.mimetype) && file.size > 8 * 1024 * 1024) throw new ApiError('VALIDATION_ERROR', 'Each private evidence photo must be 8 MB or smaller.');
       if (!await validMagic(file)) throw new ApiError('VALIDATION_ERROR', 'One or more evidence files do not match their declared file type.');
     }
-    if (!isR2Configured() && !isCloudinaryConfigured() && process.env.NODE_ENV === 'production' && !isLocalRequest(req)) throw new ApiError('PERSISTENT_UPLOAD_STORAGE_REQUIRED', 'Persistent R2 or Cloudinary storage is required for verification evidence.', { statusCode: 503 });
-    const files = await uploadMedia(req, { folder: 'verification', fileUpload: true });
-    const saved = files.map(result => ({ fileUrl: result.url, publicId: result.publicId, provider: result.provider,
-      mimeType: result.mimeType, sizeBytes: result.sizeBytes, kind: videoTypes.has(result.mimeType) ? 'VIDEO' : 'IMAGE' }));
+    const saved = await require('../services/privateEvidenceService').upload(req);
     res.status(201).json({ files: saved });
   } catch (error) { await cleanup(req.files || []); throw error; }
 });
-
-function managedUrl(value) {
-  const url = String(value || '').trim();
-  if (/^\/uploads\/[\w./%-]+$/.test(url) && !url.includes('..')) return url;
-  const bases = [process.env.R2_PUBLIC_URL, process.env.CLOUDINARY_CLOUD_NAME && `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/`].filter(Boolean);
-  return bases.some(base => {
-    try {
-      const candidate = new URL(url);
-      const allowed = new URL(String(base));
-      const allowedPath = allowed.pathname.replace(/\/$/, '');
-      return candidate.protocol === 'https:' && candidate.origin === allowed.origin
-        && (!allowedPath || candidate.pathname === allowedPath || candidate.pathname.startsWith(`${allowedPath}/`));
-    } catch { return false; }
-  }) ? url : '';
-}
-
-function readEvidence(value, allowedTypes) {
-  if (!Array.isArray(value)) return [];
-  return value.slice(0, 12).map(item => ({
-    type: String(item?.type || ''), fileUrl: managedUrl(item?.fileUrl), mimeType: String(item?.mimeType || '').slice(0, 100), sizeBytes: Math.max(0, Number(item?.sizeBytes || 0)), provider: String(item?.provider || '').slice(0, 30), orderItemId: String(item?.orderItemId || '').slice(0, 64),
-  })).filter(item => allowedTypes.includes(item.type) && item.fileUrl);
-}
 
 function barcodeSvgData(uniqueItemId) {
   const patterns = { '0':'nnnwwnwnn','1':'wnnwnnnnw','2':'nnwwnnnnw','3':'wnwwnnnnn','4':'nnnwwnnnw','5':'wnnwwnnnn','6':'nnwwwnnnn','7':'nnnwnnwnw','8':'wnnwnnwnn','9':'nnwwnnwnn','A':'wnnnnwnnw','B':'nnwnnwnnw','C':'wnwnnwnnn','D':'nnnnwwnnw','E':'wnnnwwnnn','F':'nnwnwwnnn','G':'nnnnnwwnw','H':'wnnnnwwnn','I':'nnwnnwwnn','J':'nnnnwwwnn','K':'wnnnnnnww','L':'nnwnnnnww','M':'wnwnnnnwn','N':'nnnnwnnww','O':'wnnnwnnwn','P':'nnwnwnnwn','Q':'nnnnnnwww','R':'wnnnnnwwn','S':'nnwnnnwwn','T':'nnnnwnwwn','U':'wwnnnnnnw','V':'nwwnnnnnw','W':'wwwnnnnnn','X':'nwnnwnnnw','Y':'wwnnwnnnn','Z':'nwwnwnnnn','-':'nwnnnnwnw','*':'nwnnwnwnn' };
@@ -127,7 +92,7 @@ exports.verifyPacking = asyncHandler(async (req, res) => {
   if (!order) throw notFound('Order not found');
   if (!['Confirmed', 'Packed'].includes(order.orderStatus)) throw new ApiError('ORDER_TRANSITION_INVALID', 'Confirm the order before packing verification.', { statusCode: 409 });
   const settings = protectionSettings(await getStoreSettings(order.storeId ? { storeId: order.storeId } : req.tenantFilter || {}));
-  const evidence = readEvidence(req.body?.evidence, ['PRODUCT_PHOTO', 'CONDITION_PHOTO', 'PACKAGE_PHOTO', 'SHIPPING_LABEL_PHOTO', 'PACKING_VIDEO']);
+  const evidence = await require('../services/privateEvidenceService').attachments(req, req.body?.evidence || [], ['PRODUCT_PHOTO', 'CONDITION_PHOTO', 'PACKAGE_PHOTO', 'SHIPPING_LABEL_PHOTO', 'PACKING_VIDEO']);
   const photoCount = evidence.filter(item => item.type !== 'PACKING_VIDEO').length;
   const videoCount = evidence.filter(item => item.type === 'PACKING_VIDEO').length;
   const sealId = cleanCode(req.body?.sealId);
@@ -152,6 +117,7 @@ exports.verifyPacking = asyncHandler(async (req, res) => {
     }
     orderItem.uniqueItemIds = ids;
   }
+  await require('../services/privateEvidenceService').bindToStore(evidence, order.storeId);
   if (evidence.length) await VerificationEvidence.insertMany(evidence.map(item => ({ ...item, order: order._id, phase: 'PACKING', uploadedBy: req.user._id, storeId: order.storeId })));
   order.packageVerification = { status: 'VERIFIED', sealId, securityTagId, dispatchWeightGrams: weight > 0 ? Math.round(weight) : undefined, evidenceCount: evidence.length, verifiedAt: new Date(), verifiedBy: req.user._id };
   order.revision = Number(order.revision || 0) + 1; await order.save();
@@ -164,7 +130,7 @@ exports.getEvidence = asyncHandler(async (req, res) => {
   if (!order) throw notFound('Order not found');
   const filter = { order: order._id };
   if (req.query.returnId) filter.returnRequest = req.query.returnId;
-  res.set('Cache-Control', 'private, no-store').json(await VerificationEvidence.find(andFilter(filter, req.tenantFilter)).sort('uploadedAt').lean());
+  res.set('Cache-Control', 'private, no-store').json(require('../services/privateEvidenceService').presentEvidence(await VerificationEvidence.find(andFilter(filter, req.tenantFilter)).sort('uploadedAt').lean()));
 });
 
 exports.inspectReturn = asyncHandler(async (req, res) => {
@@ -179,7 +145,7 @@ exports.inspectReturn = asyncHandler(async (req, res) => {
   const expectedIds = (orderItem?.uniqueItemIds || []).map(value => cleanCode(value, 64)).filter(Boolean).slice(0, Number(request.quantity || 1));
   const returnedIds = [...new Set((Array.isArray(req.body?.returnedUniqueItemIds) ? req.body.returnedUniqueItemIds : String(req.body?.returnedUniqueItemIds || '').split(/[\s,]+/)).map(value => cleanCode(value, 64)).filter(Boolean))];
   const settings = protectionSettings(await getStoreSettings(order.storeId ? { storeId: order.storeId } : req.tenantFilter || {}));
-  const evidence = readEvidence(req.body?.evidence, ['RETURN_PHOTO', 'UNBOXING_VIDEO']);
+  const evidence = await require('../services/privateEvidenceService').attachments(req, req.body?.evidence || [], ['RETURN_PHOTO', 'UNBOXING_VIDEO']);
   if (settings.requireReturnPhotos && !evidence.some(item => item.type === 'RETURN_PHOTO')) throw new ApiError('VALIDATION_ERROR', 'Add the required returned-item photos.');
   if (settings.requireReturnVideo && !evidence.some(item => item.type === 'UNBOXING_VIDEO')) throw new ApiError('VALIDATION_ERROR', 'Add the required return unboxing video.');
   const sealCondition = String(req.body?.sealCondition || 'NOT_CHECKED').toUpperCase();
@@ -203,6 +169,7 @@ exports.inspectReturn = asyncHandler(async (req, res) => {
   const timeline = { status: nextStatus, note: assessment.result === 'VERIFIED' ? 'Returned item matched the dispatch verification record.' : 'Verification flags require staff review. No refund was processed.', source: req.storeMember ? 'SELLER' : 'ADMIN', actor: { id: String(req.user._id), name: req.user.name || 'Staff' }, date: new Date() };
   request = await ReturnExchange.findOneAndUpdate(andFilter({ _id: request._id, revision: expectedRevision, status: request.status }, req.tenantFilter), { $set: set, $inc: { revision: 1 }, $push: { statusTimeline: timeline } }, { new: true, runValidators: true });
   if (!request) throw new ApiError('RETURN_CHANGED', 'This return changed in another session. Reload it before continuing.', { statusCode: 409 });
+  await require('../services/privateEvidenceService').bindToStore(evidence, request.storeId);
   if (evidence.length) await VerificationEvidence.insertMany(evidence.map(item => ({ ...item, order: order._id, returnRequest: request._id, orderItemId: request.orderItemId, phase: 'RETURN_INSPECTION', uploadedBy: req.user._id, storeId: request.storeId })));
   const itemStatus = assessment.result === 'VERIFIED' ? 'RETURN_VERIFIED' : 'RETURN_REJECTED';
   if (returnedIds.length) await InventoryItem.updateMany(andFilter({ uniqueItemId: { $in: returnedIds } }, req.tenantFilter), { $set: { status: itemStatus, returnedAt: new Date() } });

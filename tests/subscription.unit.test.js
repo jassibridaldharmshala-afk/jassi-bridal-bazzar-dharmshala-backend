@@ -50,8 +50,8 @@ test('expired stores retain reads but backend blocks seller writes', () => {
   assert.equal(writeError?.statusCode, 402);
 });
 
-test('seller subscription endpoints are registered before the write licence gate', () => {
+test('generated client does not expose platform subscription purchase routes', () => {
   const router = require('../routes/sellerRoutes');
-  const paths = router.stack.map((layer) => layer.route?.path || (layer.name === 'requireActiveStoreLicenseForWrites' ? 'LICENSE_GATE' : null)).filter(Boolean);
-  assert.deepEqual(paths.slice(0, 4), ['/subscription', '/subscription/checkout', '/subscription/verify', 'LICENSE_GATE']);
+  const paths = router.stack.map(layer => layer.route?.path).filter(Boolean);
+  for (const path of ['/subscription', '/subscription/checkout', '/subscription/verify']) assert.ok(!paths.includes(path));
 });

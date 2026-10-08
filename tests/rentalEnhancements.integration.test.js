@@ -1,3 +1,4 @@
+require('./rentalPaymentFixture');
 const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -22,7 +23,7 @@ const dates = (offset = 3) => {
 };
 before(startTestEnvironment); after(stopTestEnvironment);
 beforeEach(async () => {
-  await resetDatabase(); store = await ensureDefaultStore(); customer = await createCustomer(); admin = await createAdmin();
+  await resetDatabase(); store = await ensureDefaultStore(); await require('./rentalPaymentFixture').configure(store); customer = await createCustomer(); admin = await createAdmin();
   product = await createProduct({ storeId: store._id, commerceMode: 'SALE_AND_RENTAL' });
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY } });
   asset = await S.saveAsset(store, { productId: String(product._id), poolKey: 'outfit', code: 'OUTFIT-001', label: 'Outfit' });
@@ -53,7 +54,7 @@ function carrierMocks(t, overrides = {}) {
 }
 async function courierReady() {
   await policy({ courierIntegrationEnabled: true, deliveryModes: ['STORE_PICKUP', 'COURIER'] });
-  await setSettings({ storeId: store._id, shippingProvider: 'bluedart', shippingPickup: validAddress({ fullName: 'Rental store' }) });
+  await setSettings({ razorpayEnabled: true, storeId: store._id, shippingProvider: 'bluedart', shippingPickup: validAddress({ fullName: 'Rental store' }) });
   return ready(await collect(await hold({ deliveryMode: 'COURIER', address: 'Customer address' })));
 }
 function courierInput(b, extra = {}) { const at = b.status === 'OUT' ? new Date(Date.now() + A.DAY) : new Date(+new Date(b.schedule.pickupAt) - 2 * A.HOUR); return { operationId: op(), revision: b.revision, declaredValuePaise: 1000000, address: validAddress(), date: A.localKey(at, 'Asia/Kolkata'), time: '08:00', closeTime: '18:00', ...extra }; }
@@ -127,7 +128,7 @@ test('proof photos are private, normalized, tenant-scoped and bound to fresh ver
   await assert.rejects(async () => P.ensure(await S.getBooking(store, b._id), 'HANDOVER', [String(asset._id)]), /photos/);
   const uploaded = await upload(b); b = uploaded.booking;
   const metadata = await P.list(store, b._id, customer.user._id); assert.equal(metadata.photos.length, 1); assert.ok(!metadata.photos[0].bytes); assert.ok(!metadata.photos[0].digest);
-  const photo = await P.photo(store, b._id, metadata.photos[0]._id, customer.user._id); assert.equal(photo.mimeType, 'image/webp'); assert.equal((await sharp(Buffer.from(photo.base64, 'base64')).metadata()).format, 'webp');
+  const photo = await P.photo(store, b._id, metadata.photos[0]._id, customer.user._id); assert.equal(photo.mimeType, 'image/png'); assert.equal((await sharp(Buffer.from(photo.base64, 'base64')).metadata()).format, 'png');
   const foreign = await createCustomer(); await assert.rejects(() => P.photo(store, b._id, metadata.photos[0]._id, foreign.user._id));
   await assert.rejects(() => P.acknowledge(store, b._id, { operationId: op(), revision: b.revision, stage: 'HANDOVER', accepted: true, assetIds: [String(asset._id)] }, { ...customer.user.toObject(), isPhoneVerified: false }), /verified/);
   b = await P.acknowledge(store, b._id, { operationId: op(), revision: b.revision, stage: 'HANDOVER', accepted: true, assetIds: [String(asset._id)] }, customer.user);
@@ -141,7 +142,7 @@ test('condition uploads reject missing consent, spoofed SVG and excessive source
   const input = { stage: 'HANDOVER', assetId: String(asset._id), revision: b.revision, consent: 'true' };
   await assert.rejects(() => P.upload(store, b._id, { ...input, consent: 'false' }, []), /consent/);
   await assert.rejects(() => P.upload(store, b._id, input, [{ mimetype: 'image/jpeg', buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>') }]), /invalid/);
-  await assert.rejects(() => P.upload(store, b._id, input, [{ mimetype: 'image/png', buffer: Buffer.alloc(1024 * 1024 + 1) }]), /1 MB/);
+  await assert.rejects(() => P.upload(store, b._id, input, [{ mimetype: 'image/png', buffer: Buffer.alloc(8 * 1024 * 1024 + 1) }]), /8 MB/);
 });
 test('no-show cannot retain the deposit or run before owner grace period', async () => {
   let b = await collect(await hold(), 560000);
@@ -200,12 +201,17 @@ test('reverse courier tracking never receives stock and cross-store access is de
 });
 test('real multipart proof endpoint preserves fields and denies customer uploads', async () => {
   const b = await ready(await collect(await hold()));
-  const buffer = await sharp({ create: { width: 20, height: 20, channels: 3, background: '#ff0000' } }).png().toBuffer();
+  const pixels = Buffer.alloc(1200 * 1000 * 3); let seed = 71;
+  for (let i = 0; i < pixels.length; i++) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; pixels[i] = seed >>> 24; }
+  const buffer = await sharp(pixels, { raw: { width: 1200, height: 1000, channels: 3 } }).png({ compressionLevel: 0 }).toBuffer();
+  assert.ok(buffer.length > 3 * 1024 * 1024);
   const form = () => { const data = new FormData(); data.append('stage', 'HANDOVER'); data.append('assetId', String(asset._id)); data.append('revision', String(b.revision)); data.append('consent', 'true'); data.append('images', new Blob([buffer], { type: 'image/png' }), 'proof.png'); return data; };
   const bad = await fetch(`${getBaseUrl()}/api/admin/rentals/bookings/${b._id}/proofs`, { method: 'POST', headers: { Authorization: `Bearer ${customer.token}` }, body: form() }); assert.equal(bad.status, 403);
   const response = await fetch(`${getBaseUrl()}/api/admin/rentals/bookings/${b._id}/proofs`, { method: 'POST', headers: { Authorization: `Bearer ${admin.token}` }, body: form() });
   assert.equal(response.status, 200); const saved = await response.json(); assert.equal(saved.booking.revision, b.revision + 1); assert.equal(saved.photos.length, 1); assert.ok(!saved.photos[0].bytes);
   const privatePhoto = await request(`/api/rentals/bookings/${b._id}/proofs/${saved.photos[0]._id}`, { token: customer.token }); assert.equal(privatePhoto.status, 200); assert.equal(privatePhoto.headers.get('cache-control'), 'private, no-store');
+  assert.equal(privatePhoto.data.mimeType, 'image/png');
+  assert.deepEqual(await sharp(Buffer.from(privatePhoto.data.base64, 'base64')).raw().toBuffer(), pixels);
 });
 test('partial returns require evidence and acknowledgement for only the physically returned pieces', async () => {
   await policy({ requireConditionPhotos: true, requireCustomerAcknowledgement: true });
@@ -259,8 +265,8 @@ test('open customer disputes prevent settlement close and evidence expiry', asyn
   b = await action(b, 'CLOSE'); assert.equal(b.status, 'CLOSED');
 });
 test('seller invoice contact and address are snapshotted when a booking is accepted', async () => {
-  await setSettings({ storeId: store._id, legalBusinessName: 'Boutique Legal Name', address: '12 Main Street\nJaipur', contactEmail: 'owner@test.local' });
-  const b = await hold(); await setSettings({ address: 'New business address' });
+  await setSettings({ razorpayEnabled: true, storeId: store._id, legalBusinessName: 'Boutique Legal Name', address: '12 Main Street\nJaipur', contactEmail: 'owner@test.local' });
+  const b = await hold(); await setSettings({ razorpayEnabled: true, address: 'New business address' });
   const document = S.present(await S.getBooking(store, b._id)).documents.invoice;
   assert.equal(document.seller.address, '12 Main Street\nJaipur'); assert.equal(document.seller.legalBusinessName, 'Boutique Legal Name'); assert.equal(document.seller.contactEmail, 'owner@test.local');
 });

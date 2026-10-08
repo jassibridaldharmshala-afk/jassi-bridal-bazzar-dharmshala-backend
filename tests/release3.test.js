@@ -38,7 +38,7 @@ test('provisioned seller membership does not grant platform admin role', async (
 test('customers and ordinary admins cannot provision their own stores', async () => {
   for (const account of [await createCustomer(), await createAdmin()]) {
     const denied = await request('/api/stores', { method: 'POST', token: account.token, body: { name: 'Unapproved Store' } });
-    assert.equal(denied.status, 403);
+    assert.equal(denied.status, 404);
   }
   assert.equal(await Store.countDocuments({ name: 'Unapproved Store' }), 0);
 });
@@ -157,7 +157,7 @@ test('client storeId on product create is ignored', async () => {
   const category = await request('/api/admin/categories', {
     method: 'POST',
     token,
-    body: { name: 'Kurtis', slug: 'kurtis' },
+    body: { name: 'Platform accessories', slug: 'platform-accessories' },
   });
 
   const created = await request('/api/admin/products', {
@@ -174,7 +174,8 @@ test('client storeId on product create is ignored', async () => {
       storeId: other.store.id,
     },
   });
-  assert.equal(created.status, 201);
+  assert.equal(category.status, 201, JSON.stringify(category.data));
+  assert.equal(created.status, 201, JSON.stringify(created.data));
   assert.ok(!created.data.storeId);
 });
 

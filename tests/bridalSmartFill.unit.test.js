@@ -51,7 +51,8 @@ test('six product views use one bounded AI request and quick add uses the same e
     assert.ok(parts.some(item => item.text?.includes('NEVER extract size labels')));
     return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(raw) }] } }] }) };
   });
-  const result = await analyzeProductContext({ images: Array.from({ length: 6 }, () => ({ mimeType: 'image/jpeg', buffer: Buffer.from([255, 216, 255, 1]) })), categories, structure });
+  const photo = await require('sharp')({ create: { width: 12, height: 10, channels: 3, background: '#700c2a' } }).jpeg().toBuffer();
+  const result = await analyzeProductContext({ images: Array.from({ length: 6 }, () => ({ mimeType: 'image/jpeg', buffer: photo })), categories, structure });
   assert.equal(result.contextStatus, 'completed'); assert.equal(provider.mock.callCount(), 1); assert.equal(result.sizingMode, 'free-size');
   const quick = normalizeVisionSuggestion({ ...raw, fabric: 'Silk', categoryName: 'Lehengas' }, categories, 'fixture', { structure, attributes: suggestionAttributes(structure, categories) }).suggestion;
   assert.equal(quick.sizingMode, 'free-size'); assert.equal(quick.fabric, ''); assert.deepEqual(quick.highlights, raw.highlights);
@@ -61,7 +62,8 @@ test('quick add reads all selected views from approved storage and rejects overs
   const previous = process.env.GEMINI_API_KEY; process.env.GEMINI_API_KEY = 'synthetic-quick-key';
   t.after(() => { if (previous === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = previous; });
   const media = require('../services/productSmartFillMedia');
-  const photos = t.mock.method(media, 'readProductPhoto', async () => ({ mimeType: 'image/jpeg', buffer: Buffer.from([255, 216, 255, 1]) }));
+  const photo = await require('sharp')({ create: { width: 12, height: 10, channels: 3, background: '#700c2a' } }).jpeg().toBuffer();
+  const photos = t.mock.method(media, 'readProductPhoto', async () => ({ mimeType: 'image/jpeg', buffer: photo }));
   const provider = t.mock.method(global, 'fetch', async (_url, options) => {
     assert.equal(JSON.parse(options.body).contents[0].parts.filter(item => item.inlineData).length, 6);
     return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(raw) }] } }] }) };

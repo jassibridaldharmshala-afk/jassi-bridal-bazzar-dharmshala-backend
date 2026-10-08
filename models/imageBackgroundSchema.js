@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const asset = new mongoose.Schema({
+  ...require('./responsiveImageFields'),
   url: { type: String, required: true, maxlength: 4096, validate: value => /^https?:\/\/|^\/uploads\//i.test(value) },
   publicId: { type: String, maxlength: 1024 },
 }, { _id: false });

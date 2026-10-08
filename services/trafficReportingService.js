@@ -135,7 +135,7 @@ async function buildTrafficReport(context, config) {
     calculatedAt: new Date(), timezone, range: { ...range, from: range.from.toISOString(), to: range.to.toISOString() }, metrics,
     activeVisitors: active[0]?.value || 0, series: completeSeries(current.series, range, timezone, config.collectionStartedAt), sources: current.sources, firstSources: current.firstSources,
     campaigns: current.campaigns, devices: current.devices, browsers: current.browsers, operatingSystems: current.operatingSystems,
-    funnel: journey, details: ranked, commerce: sales,
+    funnel: journey, details: ranked, commerce: sales, rentalActivity: await rentalActivity(scope, range),
     health: { enabled: config.enabled, state: !config.enabled ? 'disabled' : lagSeconds > 60 ? 'delayed' : !lastEvent ? 'awaiting_data' : 'collecting', pendingSince: pending?.receivedAt, lagSeconds, lastCollectedAt: config.lastCollectedAt || lastEvent?.receivedAt, lastProcessedAt: config.lastProcessedAt, collectionStartedAt: config.collectionStartedAt, failures: config.failures || 0, lastFailureAt: config.lastFailureAt },
     retention: { rawDays: config.rawRetentionDays, summaryDays: config.summaryRetentionDays, rawAvailableFrom, detailsPartial: range.from < rawAvailableFrom },
     definitions: { visitors: 'Distinct anonymous browser identities, not guaranteed unique people. Counts are deduplicated across the selected period.', sessions: 'Distinct visits with activity in this period. A new visit starts after the configured inactivity timeout.', active: 'Distinct visitors with collected activity in the last 5 minutes; updates can lag behind collection.', engagement: 'Foreground interaction time only. An engaged session has at least 10 active seconds, 2 page views, or a verified order.', comparison: 'Previous calendar period matched to the same elapsed duration. A partial final bucket is read from raw events.', privacy: 'Consent, blocked storage, ad blockers and network loss can reduce measured traffic. No fingerprinting or precise location is collected.' },
@@ -152,3 +152,13 @@ async function trafficReport(context) {
   cache.set(key, { until: Date.now() + 15000, promise }); return promise;
 }
 module.exports = { trafficReport, overview, factsPipeline, funnel, commerce, completeSeries, invalidateTrafficCache };
+
+async function rentalActivity(scope, range) {
+  const names = ['RENTAL_CTA', 'RENTAL_DATES_CHECK', 'RENTAL_QUOTE_SUCCESS', 'RENTAL_QUOTE_FAILURE', 'RENTAL_HOLD_CREATED', 'RENTAL_PAYMENT_VERIFIED'];
+  const rows = await require('../models/AnalyticsEvent').aggregate([
+    { $match: andFilter(scope, { name: { $in: names }, createdAt: { $gte: range.from, $lt: range.to } }) },
+    { $group: { _id: '$name', value: { $sum: 1 } } },
+  ]).option({ maxTimeMS: 5000 });
+  const values = new Map(rows.map(row => [row._id, row.value]));
+  return { steps: names.map(name => ({ name, value: values.get(name) || 0 })), note: 'Shop-wide event counts in this period, not unique customers or an ordered conversion rate. Repeat checks may count again. Browser events depend on consent; payment verification is recorded by the server. Detailed traffic filters do not apply. Raw rental events are retained for up to 90 days.' };
+}

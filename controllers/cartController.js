@@ -1,3 +1,4 @@
+const { publicProduct } = require('../utils/publicProduct');
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const { asyncHandler } = require('../middleware/validate');
@@ -110,7 +111,7 @@ async function presentCart(cart, req) {
     const price = visible ? variantUnitPrice(product, variant) : Number(line.price || 0);
     return {
       ...line.toObject(), productId: String(line.product), selected: line.selected !== false,
-      product: visible ? normalizeProductImages(product, req) : { _id: String(line.product), name: 'This product is no longer available', isActive: false, unavailable: true, images: [], stock: 0 },
+      product: visible ? publicProduct(normalizeProductImages(product, req)) : { _id: String(line.product), name: 'This product is no longer available', isActive: false, unavailable: true, images: [], stock: 0 },
       price, originalPrice: visible ? Math.max(price, variantUnitMrp(product, variant)) : price,
       previousPrice: Number(line.price || 0), availableStock: stock, unavailable,
       issue: unavailable ? 'This item or selection is no longer available.' : stock < line.quantity ? (stock ? 'Only ' + stock + ' left. Reduce the quantity to continue.' : 'This selection is out of stock.') : '',

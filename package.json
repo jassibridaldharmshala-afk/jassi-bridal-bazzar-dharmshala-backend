@@ -13,8 +13,9 @@
     "check": "node --check server.js && node --check app.js",
     "keys:license": "node scripts/generate-license-keys.js",
     "check:sms": "node scripts/check-sms-config.js",
-    "test": "node --test --test-concurrency=1 \"tests/*.test.js\"",
-    "test:payments": "node scripts/test-payment-flow.js"
+    "test": "node --require ./tests/clientTestSetup.cjs --test --test-concurrency=1 \"tests/*.test.js\"",
+    "test:payments": "node scripts/test-payment-flow.js",
+    "migrate:evidence": "node scripts/migrate-private-evidence.js"
   },
   "keywords": [],
   "author": "",

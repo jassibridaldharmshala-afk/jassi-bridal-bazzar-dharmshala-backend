@@ -50,34 +50,6 @@ function findOrderItem(order, { productId, variantId: selectedVariantId, size, c
   });
 }
 
-function managedPhoto(url) {
-  const value = String(url || '').trim();
-  if (/^\/uploads\/[\w./%-]+$/.test(value) && !value.includes('..')) return value;
-  return [process.env.R2_PUBLIC_URL, process.env.CLOUDINARY_CLOUD_NAME && `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/`]
-    .filter(Boolean).some((base) => {
-      try {
-        const candidate = new URL(value);
-        const allowed = new URL(String(base));
-        const allowedPath = allowed.pathname.replace(/\/$/, '');
-        return candidate.protocol === 'https:' && candidate.origin === allowed.origin
-          && (!allowedPath || candidate.pathname === allowedPath || candidate.pathname.startsWith(`${allowedPath}/`));
-      } catch { return false; }
-    })
-    ? value : '';
-}
-
-function readPhotos(value) {
-  return [...new Set((Array.isArray(value) ? value : []).map(managedPhoto).filter(Boolean))].slice(0, 5);
-}
-
-function readCustomerEvidence(value, photos = []) {
-  const records = (Array.isArray(value) ? value : []).slice(0, 8).map(item => ({
-    type: String(item?.type || '').toUpperCase(), fileUrl: managedPhoto(item?.fileUrl), mimeType: String(item?.mimeType || '').slice(0, 100), sizeBytes: Math.max(0, Number(item?.sizeBytes || 0)),
-  })).filter(item => ['CUSTOMER_PHOTO', 'CUSTOMER_VIDEO'].includes(item.type) && item.fileUrl);
-  for (const fileUrl of photos) if (!records.some(item => item.fileUrl === fileUrl)) records.push({ type: 'CUSTOMER_PHOTO', fileUrl });
-  return records.slice(0, 8);
-}
-
 function returnQuery(query, detail = false) {
   const orderFields = detail
     ? 'invoiceNumber createdAt deliveredAt orderStatus paymentMethod paymentProvider paymentStatus paymentState finalAmount refundedAmount refunds couponDiscount prepaidDiscount shippingAddress orderItems revision packageVerification fraudProtectionSnapshot deliveryProof'
@@ -122,6 +94,9 @@ function publicReturn(row, req, { detail = false, revealPii = false } = {}) {
     delete data.pickupAddress;
     if (data.order?.shippingAddress) delete data.order.shippingAddress;
   }
+  if (!req.storeMember && req.user?.role !== 'admin' && data.order?.orderItems) data.order = require('./orderController').publicCustomerOrder(data.order);
+  if (data.customerEvidence) data.customerEvidence = require('../services/privateEvidenceService').presentEvidence(data.customerEvidence);
+  data.photos = (data.photos || []).filter(url => /^\/api\/evidence\/[a-f0-9]{24}$/i.test(url));
   data.allowedStatuses = nextStatuses(data);
   return data;
 }
@@ -190,8 +165,8 @@ exports.createReturn = asyncHandler(async (req, res) => {
   const reason = requireString(req.body?.reason, 'reason', { max: 300 });
   const comment = optionalString(req.body?.comment, 'comment', { max: 2000 });
   const quantity = requireQuantity(req.body?.quantity ?? 1, 'quantity', { min: 1, max: 20 });
-  const photos = readPhotos(req.body?.photos);
-  const customerEvidence = readCustomerEvidence(req.body?.customerEvidence, photos);
+  const customerEvidence = await require('../services/privateEvidenceService').attachments(req, req.body?.customerEvidence || [], ['CUSTOMER_PHOTO', 'CUSTOMER_VIDEO'], req.body?.photos || []);
+  const photos = customerEvidence.filter(row => row.type === 'CUSTOMER_PHOTO').map(row => row.fileUrl);
 
   let created;
   let orderForNotice;
@@ -263,6 +238,7 @@ exports.createReturn = asyncHandler(async (req, res) => {
       slaDueAt: new Date(Date.now() + Math.max(1, Number(settings.returnSlaHours || 24)) * 60 * 60 * 1000),
     };
     created = session ? (await ReturnExchange.create([payload], { session }))[0] : await ReturnExchange.create(payload);
+    await require('../services/privateEvidenceService').bindToStore(customerEvidence, order.storeId, session);
     if (customerEvidence.length) await VerificationEvidence.insertMany(customerEvidence.map(item => ({ ...item, fileUrl: item.fileUrl, order: orderId, returnRequest: created._id, orderItemId: String(orderedItem._id || ''), phase: 'RETURN_REQUEST', uploadedBy: req.user._id, storeId: order.storeId })), session ? { session } : {});
     if (orderedItem.uniqueItemIds?.length) await InventoryItem.updateMany(andFilter({ uniqueItemId: { $in: orderedItem.uniqueItemIds } }, order.storeId ? { storeId: order.storeId } : req.tenantFilter), { $set: { status: 'RETURN_REQUESTED' } }, session ? { session } : {});
     try {
@@ -381,7 +357,7 @@ exports.getReturnDetail = asyncHandler(async (req, res) => {
     VerificationEvidence.find(andFilter({ order: request.order?._id || request.order, $or: [{ returnRequest: request._id }, { phase: 'PACKING' }] }, req.tenantFilter)).sort('uploadedAt').lean(),
     refreshCustomerRisk({ storeId: request.storeId, userId: request.user?._id || request.user }),
   ]);
-  res.set('Cache-Control', 'private, no-store').json({ ...publicReturn(request, req, { detail: true }), verificationEvidence: evidence, customerRisk: risk });
+  res.set('Cache-Control', 'private, no-store').json({ ...publicReturn(request, req, { detail: true }), verificationEvidence: require('../services/privateEvidenceService').presentEvidence(evidence), customerRisk: risk });
 });
 
 async function restoreOriginalIfSellable(request, req, session) {

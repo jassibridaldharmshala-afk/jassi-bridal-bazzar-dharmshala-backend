@@ -4,7 +4,8 @@ const C = require('../controllers/rentalController');
 const { protect } = require('../middleware/authMiddleware');
 const limiter = rateLimit({ windowMs: 60000, limit: 60, standardHeaders: 'draft-7', legacyHeaders: false });
 const proofLimit = rateLimit({ windowMs: 60000, limit: 10, standardHeaders: true, legacyHeaders: false });
-const proofUpload = require('multer')({ storage: require('multer').memoryStorage(), limits: { fileSize: 1024 * 1024, files: 4, fields: 6 } }).array('images', 4);
+const proofUpload = require('../middleware/photoUploadMiddleware').createPhotoUpload({ files: 4, fields: 6,
+  maxFileBytes: require('../services/photoCompressionService').PHOTO_PRIVATE_MAX_BYTES }).array('images', 4);
 function customerRouter() {
   const router = express.Router();
   router.use(limiter);
@@ -25,6 +26,7 @@ function customerRouter() {
   router.post('/waitlist/:id/cancel', C.cancelWaitlist);
   router.get('/bookings', C.list);
   router.post('/bookings', C.hold);
+  router.get('/bookings/recover/:attemptId', C.recoverHold);
   router.get('/bookings/:id', C.detail);
   router.post('/bookings/:id/requests', C.request);
   router.post('/bookings/:id/payment', C.payment);
@@ -45,7 +47,9 @@ function staffRouter() {
   router.get('/slots', C.slots);
   router.get('/waitlist', C.waitlist);
   router.get('/tasks', C.staffPermission('inventory.read'), C.tasks);
+  router.get('/readiness-queue', C.staffPermission('inventory.read'), C.readinessQueue);
   router.get('/setup/:id', C.staffPermission('inventory.read'), C.setup);
+  router.post('/setup/:id/pieces', C.staffPermission('inventory.write'), C.registerPieces);
   router.get('/timeline', C.staffPermission('inventory.read'), C.timeline);
   router.get('/daily-desk', C.dailyDesk);
   router.post('/calendar', C.calendarSet);

@@ -40,9 +40,17 @@ const write = (name, fn) => asyncHandler(async (req, res) => {
   send(res, bookingPrivacy(req, data));
 });
 exports.staffPermission = staffPermission;
+exports.recoverHold = asyncHandler(async (req, res) => {
+  const attemptId = require('../services/rentalAlgorithms').operation(req.params.attemptId);
+  const booking = await require('../models/Rental').Booking.findOne({ storeId: req.store._id, userId: req.user._id, attemptId }).lean();
+  if (!booking) throw new ApiError('NOT_FOUND', 'This attempt has no saved booking yet. Retry the same reservation attempt.');
+  send(res, service.present(booking, { staff: false }));
+});
 exports.calendar = asyncHandler(async (req, res) => send(res, await require('../services/rentalCalendarService').calendar(req.store, req.params.id, req.query)));
 exports.calendarSet = asyncHandler(async (req, res) => send(res, await require('../services/rentalCalendarService').calendarSet(req.store, req.body, { counter: req.rentalStaff === true })));
+exports.readinessQueue = asyncHandler(async (req, res) => send(res, await require('../services/rentalReadinessQueue').queue(req.store, req.query)));
 exports.setup = asyncHandler(async (req, res) => send(res, await require('../services/rentalSetupService').detail(req.store, req.params.id)));
+exports.registerPieces = write('PIECES_REGISTERED', req => require('../services/rentalSetupService').registerPieces(req.store, req.params.id, req.body));
 exports.timeline = asyncHandler(async (req, res) => send(res, await require('../services/rentalOperationsService').timeline(req.store, req.query)));
 exports.dailyDesk = asyncHandler(async (req, res) => send(res, await require('../services/rentalOperationsService').dailyDesk(req.store, req.query)));
 exports.availability = asyncHandler(async (req, res) => send(res, await require('../services/rentalAvailabilityService').availability(req.store, req.query, { counter: req.rentalStaff === true })));
@@ -97,7 +105,10 @@ exports.verify = asyncHandler(async (req, res) => send(res, await service.verify
 exports.convertAsset = write('PIECE_TRANSFERRED_TO_SALE', req => require('../services/rentalAssetConversionService').convert(req.store, req.params.id, req.body, req.user._id));
 exports.proofs = asyncHandler(async (req, res) => send(res, await require('../services/rentalProofService').list(req.store, req.params.id, req.rentalStaff ? undefined : req.user._id)));
 exports.proofPhoto = asyncHandler(async (req, res) => send(res, await require('../services/rentalProofService').photo(req.store, req.params.id, req.params.photoId, req.rentalStaff ? undefined : req.user._id)));
-exports.uploadProof = write('CONDITION_PHOTOS', req => require('../services/rentalProofService').upload(req.store, req.params.id, req.body, req.files, req.user._id));
+exports.uploadProof = write('CONDITION_PHOTOS', async req => {
+  try { return await require('../services/rentalProofService').upload(req.store, req.params.id, req.body, req.files, req.user._id); }
+  finally { await require('../services/mediaUploadService').cleanupStaging(req.files); }
+});
 exports.withdrawProof = write('CONDITION_PHOTO_CORRECTED', req => require('../services/rentalProofService').withdraw(req.store, req.params.id, req.params.photoId, req.body, req.user._id));
 exports.acknowledge = asyncHandler(async (req, res) => send(res, await require('../services/rentalProofService').acknowledge(req.store, req.params.id, req.body, req.user)));
 exports.couriers = asyncHandler(async (req, res) => send(res, await require('../services/rentalCourierService').list(req.store, req.params.id, req.rentalStaff ? undefined : req.user._id)));

@@ -12,7 +12,7 @@ const { badRequest } = require('../utils/apiError');
 const background = require('../services/imageBackgroundService');
 const { uploadMedia } = require('../services/mediaUploadService');
 const { rateLimit } = require('express-rate-limit');
-const backgroundUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 3 * 1024 * 1024, files: 1, fields: 0 } });
+const backgroundUpload = require('../middleware/photoUploadMiddleware').createPhotoUpload({ files: 1, fields: 0 });
 const backgroundLimit = rateLimit({ windowMs: 60000, limit: 10, standardHeaders: true, legacyHeaders: false });
 
 const uploadDir = path.join(__dirname, '..', 'uploads');
@@ -78,8 +78,9 @@ router.post('/background', protect, adminOnlyUpload, backgroundLimit, background
   try {
     if (!req.file) throw badRequest('Choose a product image.');
     res.set('Cache-Control', 'no-store');
-    res.json(await background.removeBackground(req.file.buffer));
+    res.json(await background.removeBackground(await fs.readFile(req.file.path)));
   } catch (error) { next(error); }
+  finally { if (req.file?.path) await fs.unlink(req.file.path).catch(() => {}); }
 });
 
 router.post('/', protect, adminOnlyUpload, (req, res, next) => {

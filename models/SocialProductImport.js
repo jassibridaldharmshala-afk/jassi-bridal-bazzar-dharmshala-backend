@@ -9,7 +9,7 @@ const socialImportSchema = new mongoose.Schema({
   stage: { type: String, default: 'Waiting to start' }, progress: { type: Number, default: 0 },
   runId: String, attempts: { type: Number, default: 0 }, errorCode: String, error: String,
   caption: String, method: String, warnings: [String], suggestion: mongoose.Schema.Types.Mixed,
-  images: [{ _id: false, id: String, url: String, publicId: String, provider: String, kind: String, timestamp: Number,
+  images: [{ _id: false, ...require('./responsiveImageFields'), id: String, url: String, publicId: String, provider: String, kind: String, timestamp: Number,
     qualityScore: Number, sharpnessScore: Number, exposureScore: Number, recommended: Boolean, recommendedCover: Boolean,
     viewType: String, qualityWarnings: [String], width: Number, height: Number, selectionVersion: String }],
   frameSelections: [{ _id: false, analyzedFrames: Number, rejectedFrames: Number, duplicateFrames: Number, candidateFrames: Number, recommendedFrames: Number, selectionVersion: String, viewAnalysis: String }],

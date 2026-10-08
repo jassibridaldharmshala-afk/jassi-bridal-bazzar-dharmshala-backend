@@ -90,7 +90,11 @@ test('algorithm requires complementary type plus context and recognizes generic 
 test('rental-only discovery uses active listings, real rates and never sale stock for availability', async () => {
   await Rental.Configuration.create({ storeId: store._id, mode: 'RENTAL_ONLY' });
   await Store.updateOne({ _id: store._id }, { 'catalogStructure.commerce.mode': 'RENTAL_ONLY' });
-  for (const product of [source, necklace]) await Rental.Listing.create({ storeId: store._id, productId: product._id, title: product.name, active: true, dailyRatePaise: 25000, depositPaise: 100000 });
+  for (const product of [source, necklace]) {
+    await Product.updateOne({ _id: product._id }, { commerceMode: 'RENTAL_ONLY' });
+    await Rental.Listing.create({ storeId: store._id, productId: product._id, title: product.name, active: true, dailyRatePaise: 25000, depositPaise: 100000, requirements: [{ productId: product._id, poolKey: String(product._id), label: product.name, quantity: 1 }] });
+    await Rental.Asset.create({ storeId: store._id, productId: product._id, code: 'DISCOVERY-' + product._id, label: product.name, poolKey: String(product._id), state: 'READY' });
+  }
   await Rental.Listing.create({ storeId: store._id, productId: earrings._id, title: 'Hidden rental', active: false, dailyRatePaise: 10000 });
   await Product.updateOne({ _id: necklace._id }, { stock: 0 });
   const home = await request(url('/storefront/home/discovery', `recent=${source._id},${earrings._id}`));
@@ -100,7 +104,7 @@ test('rental-only discovery uses active listings, real rates and never sale stoc
   assert.deepEqual(look.data.products.map(p => p._id), [String(necklace._id)]);
   assert.equal(look.data.products[0].discoveryPurchase, 'RENTAL');
   assert.equal(look.data.products[0].commerceMode, 'RENTAL_ONLY');
-  assert.deepEqual(look.data.products[0].rentalPreview, { dailyRatePaise: 25000, depositPaise: 100000 });
+  assert.equal(look.data.products[0].rentalPreview.dailyRatePaise, 25000); assert.equal(look.data.products[0].rentalPreview.depositPaise, 100000); assert.ok(look.data.products[0].rentalPreview.listingId); assert.equal(look.data.products[0].rentalPreview.fitting, undefined);
   assert.equal(look.data.products[0].available, undefined, 'dates must be quoted before any availability promise');
   await Rental.Configuration.updateOne({ storeId: store._id }, { mode: 'SALE_ONLY' });
   assert.equal((await request(url('/storefront/home/discovery'))).data.rentalEnabled, false);

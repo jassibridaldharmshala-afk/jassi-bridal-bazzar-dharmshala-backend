@@ -94,11 +94,15 @@ test('real draft upload survives insert failure, response loss and deliberate dr
     const replay = await request('/api/admin/product-drafts/bulk-upload', { method: 'POST', token, headers: { 'Idempotency-Key': key }, body: { resumeUpload: true } });
     assert.equal(replay.status, 201, JSON.stringify(replay.data));
     assert.equal(replay.data.data.drafts[0]._id, created.data.data.drafts[0]._id);
-    assert.equal(await ProductDraft.countDocuments(), 1); assert.equal(counter.calls, 1);
+    assert.equal(await ProductDraft.countDocuments(), 1);
+    const media = created.data.data.drafts[0].images[0];
+    assert.equal(media.variants.length, 1); assert.equal(media.variants[0].width, (await require('sharp')(image).metadata()).width);
+    assert.deepEqual(replay.data.data.drafts[0].images[0].variants, media.variants);
+    assert.equal(counter.calls, 1 + media.variants.length);
     assert.equal(created.data.data.drafts[0].uploadOperationId, undefined);
     await ProductDraft.deleteMany({});
     const removed = await multipart(token, key); assert.equal(removed.status, 409);
-    assert.equal(await ProductDraft.countDocuments(), 0); assert.equal(counter.calls, 1);
+    assert.equal(await ProductDraft.countDocuments(), 0); assert.equal(counter.calls, 1 + media.variants.length);
   } finally { ProductDraft.create = originalCreate; r2.uploadImageToR2 = originalUpload; for (const name of Object.keys(process.env)) if (name.startsWith('R2_')) delete process.env[name]; }
 });
 test('local retries retain one durable file and remove all disposable staging copies', async () => {
@@ -200,4 +204,12 @@ test('R2 recovers an ambiguous committed write by checking its stable object key
     client.send = async () => { throw Object.assign(new Error('forbidden'), { $metadata: { httpStatusCode: 403 } }); };
     await assert.rejects(r2.uploadImageToR2(file, { ...options, recovering: true }), /forbidden/);
   } finally { client.send = nativeSend; for (const name of Object.keys(process.env)) if (name.startsWith('R2_')) delete process.env[name]; await fs.unlink(filePath).catch(() => {}); }
+});
+
+test('removing a display version invalidates its receipt without recreating it on replay', async () => {
+  const counter = { calls: 0 }, input = req();
+  const stored = await runUploadRequest(input, context => context.upload(input.files[0], 0, async options => ({ ...await save(counter)(options), variants: [{ provider: 'r2', publicId: 'display-one', url: 'https://test.invalid/display-one' }] })));
+  await invalidateStoredUpload('r2', stored.variants[0].publicId);
+  await assert.rejects(runUploadRequest(input, () => { throw new Error('Must not re-upload'); }), error => error.errorCode === 'UPLOAD_RETRY_CONFLICT');
+  assert.equal(counter.calls, 1);
 });

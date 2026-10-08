@@ -1,5 +1,5 @@
 const crypto = require('node:crypto');
-const { compressPhotoBuffer } = require('./photoCompressionService');
+const { preparePhotoFile, PHOTO_PRIVATE_MAX_BYTES } = require('./photoCompressionService');
 const M = require('../models/Rental');
 const A = require('./rentalAlgorithms');
 const { ApiError } = require('../utils/apiError');
@@ -21,12 +21,12 @@ async function upload(store, bookingId, input, files, actorId) {
   const images = [];
   for (const file of files) {
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) error('Use JPEG, PNG or WebP condition photos.');
-    if (!Buffer.isBuffer(file.buffer) || file.buffer.length > 1024 * 1024) error('Each uploaded photo must be below 1 MB.');
+    if (Number(file.size || file.buffer?.length) > PHOTO_PRIVATE_MAX_BYTES) error('Each private condition photo can be up to 8 MB.');
     let bytes;
     try {
-      const photo = await compressPhotoBuffer(file.buffer, { forceWebp: true });
-      bytes = photo.buffer;
-      images.push({ bytes, mimeType: photo.mimeType, digest: crypto.createHash('sha256').update(bytes).digest('hex') });
+      const photo = await preparePhotoFile(file);
+      bytes = photo.buffer || await require('node:fs/promises').readFile(photo.path);
+      images.push({ bytes, mimeType: photo.mimetype, digest: crypto.createHash('sha256').update(bytes).digest('hex') });
     }
     catch (failure) { error(`One condition photo is invalid. ${failure.message || ''}`); }
   }

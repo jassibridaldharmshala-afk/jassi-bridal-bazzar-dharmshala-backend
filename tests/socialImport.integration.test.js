@@ -78,7 +78,8 @@ test('social link import uses real media processing, draft persistence and publi
       imported = loaded.data.data;
       assert.equal(imported.suggestion.name, 'Wine Cotton Saree'); assert.equal(imported.suggestion.price, 1299);
       assert.equal(imported.suggestion.stock ?? null, null); assert.equal(imported.images.length, 1);
-      assert.ok((await fs.stat(path.resolve(__dirname, '..' + imported.images[0].url))).size > 0);
+      assert.deepEqual(await require('sharp')(await fs.readFile(path.resolve(__dirname, '..' + imported.images[0].url))).raw().toBuffer(), await require('sharp')(photo).raw().toBuffer());
+      assert.deepEqual(imported.images[0].variants.map(variant => variant.width), [320]);
       assert.equal(await Product.countDocuments(), 0); assert.equal(await ProductDraft.countDocuments(), 0);
       assert.equal(imported.runId, undefined); assert.equal(imported.sourceKey, undefined);
     });
@@ -97,6 +98,7 @@ test('social link import uses real media processing, draft persistence and publi
       const saved = await request(`/social-imports/${imported._id}/draft`, { method: 'POST', body });
       assert.equal(saved.status, 201); draftId = saved.data.draftId;
       const draft = await ProductDraft.findById(draftId);
+      assert.deepEqual(draft.images[0].variants.map(variant => variant.url), imported.images[0].variants.map(variant => variant.url));
       assert.equal(draft.name, 'Edited Wine Saree'); assert.equal(draft.status, 'draft'); assert.equal(draft.images[0].url, imported.images[0].url);
       assert.equal(draft.sourceType, 'social-import'); assert.equal(String(draft.sourceSocialImportId), imported._id);
       const retry = await request(`/social-imports/${imported._id}/draft`, { method: 'POST', body: { ...body, name: 'Must not overwrite saved edits' } });

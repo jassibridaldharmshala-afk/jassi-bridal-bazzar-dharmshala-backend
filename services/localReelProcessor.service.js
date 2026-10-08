@@ -101,6 +101,7 @@ async function uploadFrame(frame, jobId, groupNumber, storeId) {
     provider: stored.provider,
     storageKey: stored.storageKey,
     url: stored.url,
+    variants: stored.variants,
     timestampSeconds: Math.round(frame.timestampSeconds * 1000) / 1000,
     qualityScore: frame.qualityScore,
     sharpnessScore: frame.sharpnessScore,

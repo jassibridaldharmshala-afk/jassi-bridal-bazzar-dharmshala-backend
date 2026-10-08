@@ -1,3 +1,4 @@
+require('./rentalPaymentFixture');
 const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -15,7 +16,7 @@ const rentalAddress = overrides => { const { addressType, ...value } = validAddr
 const details = () => ({ version: 1, deliveryAddress: rentalAddress({ fullName: 'Buyer', mobile: '9876543210' }), collectionAddress: rentalAddress({ fullName: 'Return contact', mobile: '9876543211', city: 'Delhi', pincode: '110001' }), sameAsDelivery: false, occasion: 'Wedding', fittingInstructions: 'Check blouse fit', deliveryInstructions: 'Call on arrival', alternateContact: { name: 'Sister', phone: '9876543211' }, pickupContact: null, returnContact: null });
 before(startTestEnvironment); after(stopTestEnvironment);
 beforeEach(async () => {
-  await resetDatabase(); store = await ensureDefaultStore(); customer = await createCustomer(); admin = await createAdmin();
+  await resetDatabase(); store = await ensureDefaultStore(); await require('./rentalPaymentFixture').configure(store); customer = await createCustomer(); admin = await createAdmin();
   const product = await createProduct({ storeId: store._id, commerceMode: 'SALE_AND_RENTAL' });
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY, deliveryModes: ['STORE_PICKUP', 'SELF_DELIVERY', 'COURIER'], tailoringEnabled: true } });
   asset = await S.saveAsset(store, { productId: String(product._id), poolKey: 'outfit', code: 'LEHENGA-001', label: 'Lehenga' });
@@ -110,7 +111,7 @@ test('legacy dispatched delivery keeps its historical address while structured r
 });
 test('connected courier uses the correct saved address for each leg and rejects mismatched overrides', async t => {
   const configuration = await S.readConfiguration(store); await S.saveConfiguration(store, { ...configuration, policy: { ...configuration.policy, courierIntegrationEnabled: true } });
-  await setSettings({ storeId: store._id, shippingProvider: 'bluedart', shippingPickup: validAddress({ fullName: 'Store' }) });
+  await setSettings({ razorpayEnabled: true, storeId: store._id, shippingProvider: 'bluedart', shippingPickup: validAddress({ fullName: 'Store' }) });
   const adapter = require('../services/blueDartProvider'); let destinations = [];
   t.mock.method(adapter, 'readiness', () => ({ mode: 'test', liveBooking: true, reverse: true }));
   t.mock.method(adapter, 'serviceability', async input => { destinations.push(input); return { service: { productCode: 'A' }, pickupArea: 'JAI' }; });

@@ -102,9 +102,12 @@ test('review and return evidence photos require customer authentication and vali
   const returnValid = await upload('/api/returns/uploads', 'images', png, 'image/png', 'customer-return.png', customer.token);
   assert.equal(returnValid.status, 201, JSON.stringify(returnValid.data));
   assert.equal(returnValid.data.files.length, 1);
-  const returnStored = path.resolve(__dirname, '..', 'uploads', path.basename(returnValid.data.files[0].url));
-  t.after(() => fs.unlink(returnStored).catch(() => null));
-  assert.deepEqual(await fs.readFile(returnStored), png);
+  const returnUrl = returnValid.data.files[0].url;
+  assert.match(returnUrl, /^\/api\/evidence\//);
+  assert.equal((await fetch(getBaseUrl() + returnUrl)).status, 401);
+  const privateDownload = await fetch(getBaseUrl() + returnUrl, { headers: { Authorization: 'Bearer ' + customer.token } });
+  assert.equal(privateDownload.status, 200);
+  assert.deepEqual(Buffer.from(await privateDownload.arrayBuffer()), png);
 });
 
 test('bulk-uploaded draft photos remain available through editing and publication with local storage', async (t) => {

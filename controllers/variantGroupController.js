@@ -1,3 +1,4 @@
+const { publicProduct } = require('../utils/publicProduct');
 const mongoose = require('mongoose');
 const slugify = require('../utils/slugify');
 const VariantGroup = require('../models/VariantGroup');
@@ -533,7 +534,8 @@ function formatGroup(group, req, management) {
 
 function formatProduct(product, req, management) {
   const raw = typeof product?.toObject === 'function' ? product.toObject({ flattenMaps: true }) : { ...(product || {}) };
-  const normalized = normalizeProductImages(management ? raw : applyEffectivePricing(raw), req);
+  const data = normalizeProductImages(management ? raw : applyEffectivePricing(raw), req);
+  const normalized = management ? data : publicProduct(data);
   if (normalized.attributeValues instanceof Map) normalized.attributeValues = Object.fromEntries(normalized.attributeValues);
   if (management) return normalized;
   return Object.fromEntries(['_id', 'name', 'slug', 'price', 'effectivePrice', 'basePrice', 'originalPrice', 'discountPercentage', 'stock', 'images', 'primaryImage', 'colors', 'sizes', 'variantGroupId', 'variantName', 'variantColor', 'variantSize'].map((key) => [key, normalized[key]]).filter(([, value]) => value !== undefined));

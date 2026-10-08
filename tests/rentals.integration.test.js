@@ -1,3 +1,4 @@
+require('./rentalPaymentFixture');
 const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -17,7 +18,7 @@ const dates = (days = 3) => {
 };
 before(startTestEnvironment); after(stopTestEnvironment);
 beforeEach(async () => {
-  await resetDatabase(); store = await ensureDefaultStore(); customer = await createCustomer(); admin = await createAdmin(); product = await createProduct({ storeId: store._id, commerceMode: 'SALE_AND_RENTAL' });
+  await resetDatabase(); store = await ensureDefaultStore(); await require('./rentalPaymentFixture').configure(store); customer = await createCustomer(); admin = await createAdmin(); product = await createProduct({ storeId: store._id, commerceMode: 'SALE_AND_RENTAL' });
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY } }, admin.user._id);
   asset = await S.saveAsset(store, { productId: String(product._id), poolKey: 'lehenga-m', code: 'LEHENGA-001', label: 'Bridal lehenga M' });
   listing = await S.saveListing(store, { productId: String(product._id), title: 'Bridal lehenga', active: true, dailyRatePaise: 100000, depositPaise: 500000, requirements: [{ poolKey: 'lehenga-m', label: 'Lehenga M', quantity: 1 }] }, admin.user._id);
@@ -321,7 +322,7 @@ test('captured money after installation expiry stays refundable and never confir
 });
 
 test('sale and rental compete atomically for the same last monthly quota slot', async () => {
-  await setSettings(); await Store.updateOne({ _id: store._id }, { $set: { 'license.limitOverrides.ordersPerMonth': 1 } }); store = await Store.findById(store._id);
+  await setSettings({ razorpayEnabled: true }); await Store.updateOne({ _id: store._id }, { $set: { 'license.limitOverrides.ordersPerMonth': 1 } }); store = await Store.findById(store._id);
   const b = await hold();
   const { validAddress } = require('./factories');
   const results = await Promise.allSettled([

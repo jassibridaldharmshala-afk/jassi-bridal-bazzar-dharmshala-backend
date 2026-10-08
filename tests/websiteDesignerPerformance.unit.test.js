@@ -29,7 +29,7 @@ test('public catalog requests cannot opt into the admin lightweight response', a
   let populated = false;
   t.mock.method(Product, 'find', (input) => {
     filter = input;
-    return { populate() { populated = true; return this; }, sort: async () => [] };
+    return { populate() { populated = true; return this; }, sort() { return this; }, limit(value) { assert.equal(value, 24); return this; }, maxTimeMS(value) { assert.equal(value, 5000); return Promise.resolve([]); } };
   });
   await controller.getProducts({ baseUrl: '/api/products', query: { customizationOptions: 'true' } }, { json: () => {} });
   assert.equal(populated, true);

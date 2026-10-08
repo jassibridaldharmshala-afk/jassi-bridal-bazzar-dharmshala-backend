@@ -8,6 +8,7 @@ const verificationEvidenceSchema = new mongoose.Schema({
   phase: { type: String, enum: ['PACKING', 'RETURN_REQUEST', 'RETURN_INSPECTION'], required: true },
   type: { type: String, enum: ['PRODUCT_PHOTO', 'CONDITION_PHOTO', 'PACKAGE_PHOTO', 'SHIPPING_LABEL_PHOTO', 'PACKING_VIDEO', 'CUSTOMER_PHOTO', 'CUSTOMER_VIDEO', 'RETURN_PHOTO', 'UNBOXING_VIDEO'], required: true },
   fileUrl: { type: String, required: true, maxlength: 2200 },
+  privateFileId: { type: mongoose.Schema.Types.ObjectId, ref: 'PrivateEvidenceFile' },
   mimeType: { type: String, maxlength: 100 },
   sizeBytes: { type: Number, min: 0 },
   provider: { type: String, maxlength: 30 },

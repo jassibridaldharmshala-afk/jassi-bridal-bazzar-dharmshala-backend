@@ -57,7 +57,7 @@ async function runUploadRequest(req, work, { replay, resume = false, recordOnly 
   if (receipt.fingerprint !== fingerprint) throw conflict('The selected files or upload settings changed. Start a new upload.');
   if (receipt.status === 'REMOVED') throw conflict('These uploaded files were removed. Select the files again to start a new upload.');
   // Local images can also be removed by reference-aware product/draft cleanup.
-  for (const file of receipt.files.filter(Boolean)) {
+  for (const file of receipt.files.filter(Boolean).flatMap(file => [file, ...(file.variants || [])])) {
     if (file.provider === 'local' && !await fs.access(path.join(__dirname, '..', 'uploads', path.basename(file.publicId))).then(() => true, () => false)) {
       await Operation.updateOne({ _id: id }, { $set: { status: 'REMOVED' } });
       throw conflict('These uploaded files were removed. Select the files again to start a new upload.');
@@ -112,6 +112,6 @@ async function persistLocal(file, options = {}) {
 }
 async function invalidateStoredUpload(provider, publicId) {
   if (Operation.db.readyState !== 1) return;
-  await Operation.updateMany({ files: { $elemMatch: { provider, publicId } } }, { $set: { status: 'REMOVED' } });
+  await Operation.updateMany({ $or: [{ files: { $elemMatch: { provider, publicId } } }, { 'files.variants': { $elemMatch: { provider, publicId } } }] }, { $set: { status: 'REMOVED' } });
 }
 module.exports = { runUploadRequest, persistLocal, invalidateStoredUpload, fileDigest, storageFingerprint };

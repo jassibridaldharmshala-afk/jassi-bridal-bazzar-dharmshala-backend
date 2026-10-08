@@ -56,8 +56,8 @@ test('private APIs are not cached and unconfigured Render origins are not truste
 
   const rejected = await request('/health', { headers: { Origin: 'https://untrusted-client.onrender.com' } });
   assert.equal(rejected.headers.get('access-control-allow-origin'), null);
-  const allowed = await request('/health', { headers: { Origin: 'https://samira-collection.onrender.com' } });
-  assert.equal(allowed.headers.get('access-control-allow-origin'), 'https://samira-collection.onrender.com');
+  const allowed = await request('/health', { headers: { Origin: 'https://jassi-bridal-bazzar-dharmshalas.onrender.com' } });
+  assert.equal(allowed.headers.get('access-control-allow-origin'), 'https://jassi-bridal-bazzar-dharmshalas.onrender.com');
 });
 
 test('sitemap and share URLs are path-based', async () => {

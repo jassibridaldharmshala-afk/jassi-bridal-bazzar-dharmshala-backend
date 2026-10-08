@@ -76,13 +76,13 @@ function getJwtRefreshSecret() {
  *              delivery failure fails the request instead of silently
  *              falling back to a guessable code.
  *
- * Defaults to demo so the existing demo deployment keeps working. Switch to
- * production once a real SMS provider is connected.
+ * Production fails closed to real SMS when mode is missing or invalid.
+ * Local demos may deliberately select OTP_MODE=demo.
  */
 function getOtpMode() {
   const mode = String(process.env.OTP_MODE || '').trim().toLowerCase();
   if (mode === 'production' || mode === 'demo') return mode;
-  return 'demo';
+  return isProduction() ? 'production' : 'demo';
 }
 
 function isDemoOtpMode() {

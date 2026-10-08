@@ -4,6 +4,7 @@ const frameSchema = new mongoose.Schema({
   provider: { type: String, enum: ['r2', 'cloudinary'] },
   storageKey: String,
   url: String,
+  variants: require('./responsiveImageFields').variants,
   timestampSeconds: Number,
   qualityScore: Number,
   sharpnessScore: Number,

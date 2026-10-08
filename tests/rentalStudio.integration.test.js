@@ -1,3 +1,4 @@
+require('./rentalPaymentFixture');
 const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -20,7 +21,7 @@ const dates = day => ({ pickupAt: at(day), returnDueAt: at(day + 2) });
 let store, admin, customer, product, listing, asset;
 before(startTestEnvironment); after(stopTestEnvironment);
 beforeEach(async () => {
-  await resetDatabase(); store = await ensureDefaultStore(); admin = await createAdmin(); customer = await createCustomer();
+  await resetDatabase(); store = await ensureDefaultStore(); await require('./rentalPaymentFixture').configure(store); admin = await createAdmin(); customer = await createCustomer();
   product = await createProduct({ storeId: store._id, commerceMode: 'SALE_AND_RENTAL' });
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY, measurementProfilesEnabled: true, tailoringEnabled: true, maintenanceTasksEnabled: true, dateFirstEnabled: true, refundDashboardEnabled: true, piecePerformanceEnabled: true, waitlistEnabled: true } });
   asset = await S.saveAsset(store, { productId: String(product._id), poolKey: 'studio', code: 'STUDIO-001', label: 'Lehenga', costPaise: 300000 });

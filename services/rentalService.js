@@ -15,6 +15,8 @@ const usage = require('./commerceUsageService');
 const inventoryRules = require('./rentalInventoryRules');
 async function admission(store) {
   assertStoreCanAcceptOrders(store, { rental: true });
+  const launch = await launchReadiness(store);
+  if (!launch.acceptingOrders) fail(launch.pauseMessage, 'CHECKOUT_RESTRICTED');
   const platform = await require('./controlPlaneClient').licenseStatus();
   if (platform.managed && !['ACTIVE', 'TRIAL'].includes(platform.status)) fail('Renew the subscription before accepting a new rental.', 'SUBSCRIPTION_REQUIRED');
   return platform;
@@ -29,12 +31,20 @@ async function ensureIndexes() {
 }
 function storeId(store) { if (!store?._id) fail('Choose a store.', 'STORE_REQUIRED'); return store._id; }
 function defaultMode(store) { return A.MODES.includes(store.catalogStructure?.commerce?.mode) ? store.catalogStructure.commerce.mode : 'SALE_ONLY'; }
+async function launchReadiness(store, session = null) {
+  const settings = await Settings.findOne(store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }).session(session).lean();
+  const methods = require('./paymentSettingsService').buildPaymentOptions(settings, { razorpayConfigured: gateway.isRazorpayConfigured() }).filter(m => m.provider === 'Razorpay' && m.enabled);
+  return { acceptingOrders: settings?.acceptingOrders !== false, onlinePayments: methods.length > 0,
+    pauseMessage: settings?.orderPauseMessage || 'This store has paused new orders. Contact the store for help.',
+    contact: { phone: settings?.contactPhone || store.supportPhone || '', whatsapp: settings?.whatsappNumber || store.whatsappNumber || '', email: settings?.contactEmail || store.supportEmail || '' } };
+}
 async function readConfiguration(store) {
   const config = await M.Configuration.findOne({ storeId: storeId(store) }).lean();
   const policy = { ...A.DEFAULT_POLICY, timezone: store.timezone || 'Asia/Kolkata', ...config?.policy };
   // Legacy zero-advance preferences cannot create new free confirmed bookings.
   if (!policy.advancePercent) policy.advancePercent = A.DEFAULT_POLICY.advancePercent;
-  return { mode: config?.mode || defaultMode(store), policy, revision: config?.revision || 0 };
+  const { contact, ...readiness } = await launchReadiness(store);
+  return { mode: config?.mode || defaultMode(store), policy, revision: config?.revision || 0, readiness, contact };
 }
 async function initialise(store) {
   await ensureIndexes();
@@ -84,7 +94,7 @@ async function bindingsEligible(store, allocations, session) {
   const bindings = allocations.map(a => a.binding).filter(b => b?.productId);
   if (!bindings.length) return true; // Previously accepted, unbound legacy pieces.
   const ids = [...new Set(bindings.map(b => String(b.productId)))];
-  const rows = await Product.find({ $and: [store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }, { _id: { $in: ids }, isActive: true, isArchived: { $ne: true }, $or: [{ publishAt: null }, { publishAt: { $lte: new Date() } }] }] }).select('_id variants').session(session || null).lean();
+  const rows = await Product.find({ $and: [store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }, { _id: { $in: ids } }, inventoryRules.publishedRentalFilter()] }).select('_id variants').session(session || null).lean();
   const byId = new Map(rows.map(p => [String(p._id), p]));
   return bindings.every(b => { const product = byId.get(String(b.productId)); return !!product && (!b.variantId || product.variants?.some(v => String(v._id) === b.variantId && v.isActive !== false)); });
 }
@@ -278,11 +288,10 @@ function contact(input, user) {
   return { name, phone: phone.replace(/[\s()-]/g, ''), email, whatsappConsent: input.whatsappConsent === true };
 }
 async function hold(store, input, user, { counter = false } = {}) {
-  const platform = await admission(store);
   const attemptId = A.operation(input.attemptId);
   if (input.acceptTerms !== true) fail('Accept the rental terms to continue.', 'VALIDATION_ERROR');
   const customer = contact(input.customer || {}, user);
-  if (!counter && !user?.isPhoneVerified) fail('Verify your phone before booking.', 'FORBIDDEN');
+  if (!counter && (!user?.isPhoneVerified || user.offlineSession || !require('mongoose').isValidObjectId(user._id))) fail('Verify your phone before booking.', 'FORBIDDEN');
   if (!counter) await require('./customerAccessService').assertCustomerCanCheckout({ storeId: store._id, userId: user._id });
   if (!counter) customer.phone = user.phone;
   const details = input.bookingDetails === undefined ? undefined : D.bookingDetails(input.bookingDetails, input.deliveryMode || 'STORE_PICKUP');
@@ -290,6 +299,12 @@ async function hold(store, input, user, { counter = false } = {}) {
   return transaction(store, async (session, config) => {
     const previous = await M.Booking.findOne({ storeId: store._id, attemptId }).session(session);
     if (previous) { if (previous.fingerprint !== fingerprint) fail('This booking attempt belongs to different details. Start a new attempt.'); return present(previous); }
+    // Retry an existing attempt before applying new-booking admission rules.
+    // Pausing orders or payments must not strand an already-created hold.
+    const platform = await admission(store);
+    const launch = await launchReadiness(store, session);
+    if (!launch.acceptingOrders) fail(launch.pauseMessage, 'CHECKOUT_RESTRICTED');
+    if (!counter && !launch.onlinePayments) fail('Online rental payments are unavailable. Contact the store; no booking or payment has been created.', 'CHECKOUT_RESTRICTED');
     const data = await quoteInternal(store, input, session, { counter });
     if (input.policyRevision !== data.policyRevision) fail('Rental terms changed. Review the quote and accept again.', 'RENTAL_QUOTE_CHANGED');
     if (input.quoteFingerprint !== A.quoteFingerprint(store._id, data)) fail('The rental price or listing changed. Review the latest quote and accept it again before reserving.', 'RENTAL_QUOTE_CHANGED');
@@ -306,7 +321,7 @@ async function hold(store, input, user, { counter = false } = {}) {
     if (matchedCustomer) { booking.userId = matchedCustomer._id; await booking.save({ session }); }
     await M.Reservation.insertMany(data.allocations.map(a => ({ storeId: store._id, assetId: a.assetId, bookingId: booking._id, blockedFrom: data.schedule.blockedFrom, blockedUntil: data.schedule.blockedUntil, expiresAt })), { session });
     return present(booking);
-  }, { accepting: true });
+  });
 }
 async function getBooking(store, bookingId, session, userId) {
   const booking = await M.Booking.findOne({ _id: A.id(bookingId), storeId: store._id, ...(userId ? { userId } : {}) }).session(session || null);
@@ -662,6 +677,8 @@ async function processCaptured(payment, entity) {
     const b = await getBooking(store, payment.bookingId, session);
     if (row.state === 'CAPTURED') { if (row.paymentId !== entity.id) fail('A different payment was already recorded.'); return present(b); }
     row.state = 'CAPTURED'; row.paymentId = entity.id; await row.save({ session });
+    // Persist once with the capture transaction; the browser cannot report verified payment.
+    await require('../models/AnalyticsEvent').create([{ name: 'RENTAL_PAYMENT_VERIFIED', storeId: store._id, metadata: { amountPaise: row.amountPaise }, expiresAt: new Date(Date.now() + 90 * 86400000) }], { session });
     b.ledger.push({ operationId: `pay_${String(row._id)}`, kind: 'COLLECTION', amountPaise: row.amountPaise, method: 'RAZORPAY', paymentId: entity.id, paymentOrderId: row.orderId, reference: entity.id, status: 'PROCESSED', at: new Date() });
     await confirmIfPaid(b, session, { store, platform, captured: true });
     // An expired/cancelled hold is never revived by a delayed payment.
@@ -767,17 +784,33 @@ async function expireHolds(store) {
     for (const b of rows) { b.status = 'EXPIRED'; b.adjustedRentalPaise = 0; await require('./rentalStudioService').cancelWork(store, b, session); await M.Reservation.updateMany({ storeId: store._id, bookingId: b._id }, { $set: { active: false } }, { session }); await event(b, 'EXPIRED', { operationId: `expire_${b._id}` }, undefined, session); }
   });
 }
+function publicOffer(row, status) {
+  const { _id, productId, variantId, title, size, colour, dailyRatePaise, depositPaise, packages, cleaningFeePaise, alterationFeePaise, notes, fitting, advanceMode, advancePercent, advanceAmountPaise } = row;
+  return { _id, productId, variantId, title, size, colour, dailyRatePaise, depositPaise, packages, cleaningFeePaise, alterationFeePaise, notes, fitting, advanceMode, advancePercent, advanceAmountPaise,
+    includedItems: status.components.map(c => ({ label: c.label, quantity: c.required })), readiness: { ready: status.ready, reasons: status.reasons } };
+}
 async function publicListings(store, productId) {
   const config = await readConfiguration(store);
-  if (config.mode === 'SALE_ONLY') return { enabled: false, listings: [] };
   const product = await Product.findOne({ $and: [productFilter(store, productId), inventoryRules.publishedRentalFilter()] }).select('_id').lean();
-  if (!product) fail('Product not found.', 'NOT_FOUND');
-  const rows = await M.Listing.find({ storeId: store._id, productId: product._id, active: true }).limit(50).lean();
-  return { enabled: true, timezone: config.policy.timezone, policy: config.policy, policyRevision: config.revision, listings: rows.map(({ _id, title, size, colour, dailyRatePaise, depositPaise, packages, cleaningFeePaise, alterationFeePaise, notes, fitting }) => ({ _id, title, size, colour, dailyRatePaise, depositPaise, packages, cleaningFeePaise, alterationFeePaise, notes, fitting })) };
+  const reasons = [];
+  if (config.mode === 'SALE_ONLY') reasons.push({ code: 'RENTALS_DISABLED', message: 'This store has not enabled rentals.' });
+  if (!product) reasons.push({ code: 'PRODUCT_UNAVAILABLE', message: 'This product is not published for rental.' });
+  const rows = product ? await M.Listing.find({ storeId: store._id, productId: product._id }).sort('dailyRatePaise _id').limit(50).lean() : [];
+  const statuses = await require('./rentalSetupService').batchReadiness(store, rows);
+  const live = rows.filter(row => row.active && statuses.get(String(row._id)).ready);
+  if (product && !live.length) {
+    if (!rows.length || rows.every(row => !row.active)) reasons.push({ code: 'OFFER_INACTIVE', message: 'The store is completing rental setup for this product.' });
+    for (const row of rows.filter(row => row.active)) reasons.push(...statuses.get(String(row._id)).reasons);
+  }
+  if (!config.readiness.acceptingOrders) reasons.push({ code: 'ORDERS_PAUSED', message: config.readiness.pauseMessage });
+  if (!config.readiness.onlinePayments) reasons.push({ code: 'ONLINE_PAYMENT_UNAVAILABLE', message: 'Online payment is unavailable. Contact the store to discuss a rental request.' });
+  return { enabled: config.mode !== 'SALE_ONLY', timezone: config.policy.timezone, policy: config.policy, policyRevision: config.revision,
+    readiness: { ...config.readiness, bookable: config.mode !== 'SALE_ONLY' && live.length > 0 && config.readiness.acceptingOrders && config.readiness.onlinePayments, reasons },
+    contact: config.contact, listings: config.mode === 'SALE_ONLY' ? [] : live.map(row => publicOffer(row, statuses.get(String(row._id)))) };
 }
-async function catalogue(store, query = {}) {
+async function catalogue(store, query = {}, { all = false } = {}) {
   const configuration = await readConfiguration(store);
-  if (configuration.mode === 'SALE_ONLY') return { configuration, rows: [], page: 1, pages: 0 };
+  if (configuration.mode === 'SALE_ONLY') return { configuration, rows: [], total: 0, page: 1, pages: 0 };
   const page = A.integer(Number(query.page || 1), 'page', 1, 10000);
   const filter = { storeId: store._id, active: true };
   if (query.productId) filter.productId = A.id(query.productId);
@@ -790,12 +823,15 @@ async function catalogue(store, query = {}) {
   const productQuery = { $and: [store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }, inventoryRules.publishedRentalFilter()] };
   if (query.category) productQuery.category = A.id(query.category);
   if (query.search) { const search = A.text(query.search, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); productQuery.name = new RegExp(search, 'i'); }
-  const products = await Product.find(productQuery).select('_id name images category').limit(10000).lean();
+  const products = await Product.find(productQuery).select('_id name images category').lean();
   const productMap = new Map(products.map(p => [String(p._id), p]));
-  if (filter.productId && !productMap.has(String(filter.productId))) return { configuration, rows: [], page, pages: 0 };
+  if (filter.productId && !productMap.has(String(filter.productId))) return { configuration, rows: [], total: 0, page, pages: 0 };
   if (!filter.productId) filter.productId = { $in: products.map(p => p._id) };
-  const [rows, count] = await Promise.all([M.Listing.find(filter).sort('title').skip((page - 1) * 30).limit(30).select('-requirements -notes -revision').lean(), M.Listing.countDocuments(filter)]);
-  return { configuration, rows: rows.map(r => ({ ...r, product: productMap.get(String(r.productId)) })), page, pages: Math.ceil(count / 30) };
+  const offers = await M.Listing.find(filter).sort('title _id').lean();
+  const statuses = await require('./rentalSetupService').batchReadiness(store, offers);
+  const eligible = offers.filter(row => statuses.get(String(row._id)).ready);
+  const rows = (all ? eligible : eligible.slice((page - 1) * 30, page * 30)).map(row => ({ ...publicOffer(row, statuses.get(String(row._id))), product: productMap.get(String(row.productId)) }));
+  return { configuration, rows, total: eligible.length, page, pages: Math.ceil(eligible.length / 30) };
 }
 async function report(store, query) {
   const from = A.date(query.from), to = A.date(query.to);
@@ -831,7 +867,7 @@ async function workspace(store) {
   const [configuration, listings, assets, bookings, jobs, blocks] = await Promise.all([readConfiguration(store), M.Listing.find({ storeId: store._id }).sort('-createdAt').limit(100).lean(), M.Asset.find({ storeId: store._id }).sort('code').limit(500).lean(), listBookings(store), M.Job.find({ storeId: store._id }).sort('-createdAt').select('-leaseToken').limit(30).lean(), M.Reservation.find({ storeId: store._id, active: true, kind: 'MAINTENANCE' }).limit(100).lean()]);
   const counts = await M.Booking.aggregate([{ $match: { storeId: store._id } }, { $group: { _id: '$status', count: { $sum: 1 } } }]);
   const overdue = await M.Booking.countDocuments({ storeId: store._id, status: 'OUT', 'schedule.returnDueAt': { $lt: new Date() } });
-  return { configuration, listings, assets, bookings, jobs, blocks, counts: Object.fromEntries(counts.map(c => [c._id, c.count])), overdue, readiness: { transactions: await supportsTransactions(), onlinePayments: gateway.isRazorpayConfigured(), stockMode: 'SEPARATE_RENTAL_ASSETS' } };
+  return { configuration, listings, assets, bookings, jobs, blocks, counts: Object.fromEntries(counts.map(c => [c._id, c.count])), overdue, readiness: { transactions: await supportsTransactions(), onlinePayments: configuration.readiness.onlinePayments, acceptingOrders: configuration.readiness.acceptingOrders, stockMode: 'SEPARATE_RENTAL_ASSETS' } };
 }
 async function managementRows(store, kind, query = {}) {
   const page = A.integer(Number(query.page || 1), 'page', 1, 10000);
@@ -847,7 +883,7 @@ async function managementRows(store, kind, query = {}) {
 }
 async function paymentMethods(store) {
   const settings = await Settings.findOne(store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }).lean();
-  return require('./paymentSettingsService').buildPaymentOptions(settings, { razorpayConfigured: gateway.isRazorpayConfigured() }).filter(m => m.provider === 'Razorpay').map(({ key, label, enabled }) => ({ key, label, enabled }));
+  return require('./paymentSettingsService').buildPaymentOptions(settings, { razorpayConfigured: gateway.isRazorpayConfigured() }).filter(m => m.provider === 'Razorpay').map(({ key, label, enabled, disabledReason }) => ({ key, label, enabled, disabledReason }));
 }
 async function providerGet(path) {
   if (!gateway.isRazorpayConfigured()) fail('Payment provider is not configured.', 'SERVICE_UNAVAILABLE');

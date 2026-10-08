@@ -6,7 +6,7 @@ const fsSync = require('fs');
 const { spawn } = require('child_process');
 const { photoFile } = require('../modules/social-workspace/media');
 const { sanitizeProductImages } = require('../utils/imageUtils');
-const { compressPhotoBuffer } = require('./photoCompressionService');
+const { compressPhotoBuffer, PHOTO_SOURCE_MAX_BYTES } = require('./photoCompressionService');
 const workerRoot = path.resolve(__dirname, '../../ai-video-worker');
 const python = path.join(workerRoot, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 const modelDirectory = path.join(workerRoot, '.models');
@@ -24,10 +24,10 @@ function runLocal(buffer) {
     });
     let chunks = [], size = 0;
     const timer = setTimeout(() => { child.kill(); reject(new Error('Worker timeout')); }, 90000);
-    child.stdout.on('data', chunk => { size += chunk.length; if (size > 12 * 1024 * 1024) child.kill(); else chunks.push(chunk); });
+    child.stdout.on('data', chunk => { size += chunk.length; if (size > PHOTO_SOURCE_MAX_BYTES) child.kill(); else chunks.push(chunk); });
     child.stderr.resume();
     child.on('error', reject);
-    child.on('close', code => { clearTimeout(timer); localBusy = false; code === 0 && size <= 12 * 1024 * 1024 ? resolve(Buffer.concat(chunks)) : reject(new Error('Worker failed')); });
+    child.on('close', code => { clearTimeout(timer); localBusy = false; code === 0 && size <= PHOTO_SOURCE_MAX_BYTES ? resolve(Buffer.concat(chunks)) : reject(new Error('Worker failed')); });
     child.stdin.on('error', () => {});
     child.stdin.end(buffer);
   });
@@ -41,7 +41,7 @@ async function removeStoredBackground(url) {
   try {
     await photoFile(sanitizeProductImages([{ url }])[0].url, file);
     const buffer = await fs.readFile(file);
-    if (buffer.length > 3 * 1024 * 1024) throw new ApiError('BACKGROUND_IMAGE_TOO_LARGE', 'Re-upload this photo to optimize it before editing.', { statusCode: 400 });
+    if (buffer.length > PHOTO_SOURCE_MAX_BYTES) throw new ApiError('BACKGROUND_IMAGE_TOO_LARGE', 'Choose a photo up to 20 MB.', { statusCode: 400 });
     return await removeBackground(buffer);
   } finally {
     await fs.unlink(file).catch(() => null);
@@ -74,7 +74,7 @@ async function removeBackground(buffer, fetchImpl = fetch) {
     const chunks = []; let size = 0;
     for await (const chunk of response.body) {
       size += chunk.length;
-      if (size > 12 * 1024 * 1024) throw new Error('Result too large');
+      if (size > PHOTO_SOURCE_MAX_BYTES) throw new Error('Result too large');
       chunks.push(chunk);
     }
     const output = Buffer.concat(chunks);

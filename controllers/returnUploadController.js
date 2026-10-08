@@ -1,10 +1,6 @@
 const fs = require('fs/promises');
-const upload = require('../middleware/uploadMiddleware');
-const { isR2Configured } = require('../services/r2Upload');
-const { isCloudinaryConfigured } = require('../services/cloudinaryUpload');
-const { isLocalRequest } = require('../utils/imageUtils');
+const upload = require('../middleware/photoUploadMiddleware').createPhotoUpload({ privateEvidence: true, maxFileBytes: 8 * 1024 * 1024 });
 const { ApiError } = require('../utils/apiError');
-const { uploadMedia } = require('../services/mediaUploadService');
 
 async function cleanup(files = []) {
   await Promise.all(files.map((file) => fs.unlink(file.path).catch(() => null)));
@@ -26,11 +22,8 @@ exports.uploadReturnEvidence = async function uploadReturnEvidence(req, res, nex
   try {
     if (!req.files?.length && req.body?.resumeUpload !== true) throw new ApiError('VALIDATION_ERROR', 'Choose at least one return photo.');
     await assertRealImages(req.files || []);
-    if (!isR2Configured() && !isCloudinaryConfigured() && process.env.NODE_ENV === 'production' && !isLocalRequest(req)) {
-      throw new ApiError('PERSISTENT_UPLOAD_STORAGE_REQUIRED', 'Return evidence needs Cloudflare R2 or Cloudinary in production.', { statusCode: 503 });
-    }
-    const files = await uploadMedia(req, { folder: 'returns' });
-    res.status(201).json({ files: files.map((file) => ({ url: file.url, publicId: file.publicId, mimeType: file.mimeType, sizeBytes: file.sizeBytes, provider: file.provider || (isR2Configured() ? 'r2' : isCloudinaryConfigured() ? 'cloudinary' : 'local') })) });
+    const files = await require('../services/privateEvidenceService').upload(req);
+    res.status(201).json({ files: files.map((file) => ({ url: file.url, publicId: file.publicId, mimeType: file.mimeType, sizeBytes: file.sizeBytes, provider: 'private' })) });
   } catch (error) {
     await cleanup(req.files || []);
     next(error);

@@ -81,6 +81,7 @@ exports.funnel = asyncHandler(async (req, res) => {
   res.json({
     range: req.query.range || '30d',
     events: byName,
+    rentalFunnel: ['RENTAL_CTA', 'RENTAL_DATES_CHECK', 'RENTAL_QUOTE_SUCCESS', 'RENTAL_QUOTE_FAILURE', 'RENTAL_HOLD_CREATED', 'RENTAL_PAYMENT_VERIFIED'].map(name => ({ name, count: byName[name] || 0 })),
     sources: sources.map((row) => ({ source: row._id, count: row.count })),
     campaigns: campaigns.map((row) => ({
       source: row._id.source || '',

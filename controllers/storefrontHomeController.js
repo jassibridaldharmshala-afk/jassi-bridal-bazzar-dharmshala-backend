@@ -30,6 +30,7 @@ function publicProductFilter(req, extra = {}) {
     $and: [
       { isActive: true, isArchived: { $ne: true } },
       { $or: [{ publishAt: { $exists: false } }, { publishAt: null }, { publishAt: { $lte: new Date() } }] },
+      req.commerceFilter || {},
       extra,
     ],
   }, req.tenantFilter);
@@ -71,7 +72,7 @@ function homeProduct(product, req) {
   return Object.fromEntries([
     '_id', 'id', 'slug', 'name', 'category', 'subCategory', 'price', 'originalPrice', 'discountPercentage',
     'stock', 'lowStockAlert', 'sizes', 'colors', 'variants', 'sizingMode', 'images', 'primaryImage',
-    'rating', 'numReviews', 'isFeatured', 'isNewArrival', 'isBestSeller', 'showOnHomepage', 'showInTrending', 'commerceMode', 'rentalPreview',
+    'rating', 'numReviews', 'isFeatured', 'isNewArrival', 'isBestSeller', 'showOnHomepage', 'showInTrending', 'commerceMode', 'rentalPreview', 'rentalStatus', 'purchaseEnabled',
   ].map((key) => {
     const field = key === 'images' && Array.isArray(value.images)
       ? value.images.slice(0, 1).map(publicImage)
@@ -84,7 +85,7 @@ function homeProduct(product, req) {
 
 function publicImage(image) {
   if (typeof image === 'string') return image;
-  return { url: image?.url || '', primary: Boolean(image?.primary) };
+  return { url: image?.url || '', primary: Boolean(image?.primary), ...(image?.variants ? { variants: image.variants.map(({ url, width, height }) => ({ url, width, height })) } : {}) };
 }
 
 function publicVariant(variant = {}) {
@@ -150,6 +151,7 @@ async function settled(label, work, fallback, warnings) {
 }
 
 exports.getMobileHome = asyncHandler(async (req, res) => {
+  req.commerceFilter = await require('../services/catalogCommerceService').publicFilter(req);
   const started = process.hrtime.bigint();
   const warnings = [];
   // Start independent work together. A policy/theme lookup must not postpone

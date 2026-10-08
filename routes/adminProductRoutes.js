@@ -3,6 +3,7 @@ const product = require('../controllers/productController');
 const smartFill = require('../controllers/productSmartFillController');
 
 router.get('/', product.getProducts);
+router.post('/photo-grouping', smartFill.limiter, smartFill.groupUpload, smartFill.groupPhotos);
 router.get('/smart-fill/status', smartFill.status);
 router.post('/smart-fill', smartFill.limiter, smartFill.fill);
 router.get('/quick-analyze/status', product.getQuickAddVisionStatus);

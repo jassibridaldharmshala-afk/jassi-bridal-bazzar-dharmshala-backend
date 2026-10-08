@@ -184,12 +184,12 @@ async function analyzeProductContext({ caption = '', title = '', filePaths = [],
       if (bytesUsed + buffer.length > 14 * 1024 * 1024) break;
       parts.push({ inlineData: { mimeType: 'image/jpeg', data: buffer.toString('base64') } }); bytesUsed += buffer.length;
     }
-    // Saved catalog photos are already compressed. Keep this path in memory;
-    // reel file preparation continues to use the existing bounded workflow.
+    // Analyze bounded copies while the saved catalog photos retain full detail.
     for (const item of images.slice(0, 6)) {
-      if (!['image/jpeg', 'image/png', 'image/webp'].includes(item.mimeType) || !Buffer.isBuffer(item.buffer) || !item.buffer.length || item.buffer.length > 4 * 1024 * 1024) throw new Error('Invalid catalog photo');
-      if (bytesUsed + item.buffer.length > 14 * 1024 * 1024) break;
-      parts.push({ inlineData: { mimeType: item.mimeType, data: item.buffer.toString('base64') } }); bytesUsed += item.buffer.length;
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(item.mimeType)) throw new Error('Invalid catalog photo');
+      const photo = await require('./photoCompressionService').prepareAnalysisPhotoBuffer(item.buffer);
+      if (bytesUsed + photo.buffer.length > 14 * 1024 * 1024) break;
+      parts.push({ inlineData: { mimeType: photo.mimeType, data: photo.buffer.toString('base64') } }); bytesUsed += photo.buffer.length;
     }
     stage = 'provider';
     const { raw, model } = await generateGeminiJson({ parts, signal });

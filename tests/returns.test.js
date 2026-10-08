@@ -170,7 +170,7 @@ test('completing a return restores stock once', async () => {
   const created = await request('/api/returns', {
     method: 'POST',
     token,
-    body: { order: orderId, product: String(product._id), type: 'return', reason: 'Damaged', photos: ['/uploads/return-test.jpg'] },
+    body: { order: orderId, product: String(product._id), type: 'return', reason: 'Damaged', photos: [await privatePhoto(token)] },
   });
   assert.equal(created.status, 201);
 
@@ -236,7 +236,7 @@ test('simultaneous return completion restores the returned unit exactly once', a
   const { token } = await createCustomer();
   const product = await createProduct({ stock: 3 });
   const { orderId, adminToken } = await deliveredOrder(token, product);
-  const created = await request('/api/returns', { method: 'POST', token, body: { order: orderId, product: String(product._id), type: 'return', reason: 'Damaged', photos: ['/uploads/return-test.jpg'] } });
+  const created = await request('/api/returns', { method: 'POST', token, body: { order: orderId, product: String(product._id), type: 'return', reason: 'Damaged', photos: [await privatePhoto(token)] } });
   await request(`/api/admin/returns/${created.data._id}/status`, { method: 'PUT', token: adminToken, body: { status: 'Approved' } });
   await request(`/api/admin/returns/${created.data._id}/status`, { method: 'PUT', token: adminToken, body: { status: 'Received' } });
   const results = await Promise.all([1,2].map(() => request(`/api/admin/returns/${created.data._id}/status`, { method: 'PUT', token: adminToken, body: { status: 'QC Passed', inventoryDisposition: 'RESTOCK', receivedQuantity: 1, qcNotes: 'Sellable.' } })));
@@ -248,7 +248,7 @@ test('failed return QC records received units in quarantine without making them 
   const { token } = await createCustomer();
   const product = await createProduct({ stock: 3 });
   const { orderId, adminToken } = await deliveredOrder(token, product);
-  const created = await request('/api/returns', { method: 'POST', token, body: { order: orderId, product: String(product._id), type: 'return', reason: 'Damaged', photos: ['/uploads/return-test.jpg'] } });
+  const created = await request('/api/returns', { method: 'POST', token, body: { order: orderId, product: String(product._id), type: 'return', reason: 'Damaged', photos: [await privatePhoto(token)] } });
   await request(`/api/admin/returns/${created.data._id}/status`, { method: 'PUT', token: adminToken, body: { status: 'Approved' } });
   await request(`/api/admin/returns/${created.data._id}/status`, { method: 'PUT', token: adminToken, body: { status: 'Received' } });
   const failed = await request(`/api/admin/returns/${created.data._id}/status`, {
@@ -350,3 +350,9 @@ test('exchange price differences must be settled before allocating the replaceme
   assert.equal(allocatedInventory.status, 200);
   assert.equal(allocatedInventory.data.reserved, 1);
 });
+
+async function privatePhoto(token) {
+  const user = await require('../models/User').findById(require('jsonwebtoken').decode(token).id);
+  const buffer = await require('sharp')({ create: { width: 10, height: 10, channels: 3, background: '#aabbcc' } }).png().toBuffer();
+  return (await require('../services/privateEvidenceService').save({ buffer, size: buffer.length, mimetype: 'image/png' }, { user })).fileUrl;
+}

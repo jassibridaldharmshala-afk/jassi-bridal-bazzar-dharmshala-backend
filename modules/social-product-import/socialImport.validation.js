@@ -79,7 +79,7 @@ function validateDraftReview(body, job) {
     colors: list('colors'), tags: list('tags'), sizes: list('sizes'), highlights: list('highlights'),
     sizingMode: ['auto', 'sized', 'free-size'].includes(body.sizingMode) ? body.sizingMode : 'auto',
     sizeChart, sizeChartProfile: ['auto', 'free-size', ...Object.keys(require('../../services/productSizingService').SIZE_CHART_PROFILES)].includes(body.sizeChartProfile) ? body.sizeChartProfile : 'auto', attributeValues,
-    images: images.map((image) => ({ url: image.url, publicId: image.publicId, primary: image.id === primaryId,
+    images: images.map((image) => ({ url: image.url, publicId: image.publicId, variants: image.variants, width: image.width, height: image.height, mimeType: image.mimeType, sizeBytes: image.sizeBytes, provider: image.provider, primary: image.id === primaryId,
       ...(image.kind === 'frame' ? { sourceFrame: { timestampSeconds: image.timestamp, qualityScore: image.qualityScore, width: image.width, height: image.height,
         selectionVersion: image.selectionVersion, viewType: ['front', 'back', 'side', 'detail', 'unknown'].includes(body.viewTypes?.[image.id]) ? body.viewTypes[image.id] : image.viewType || 'unknown' } } : {}) })),
     image: images.find((image) => image.id === primaryId).url,

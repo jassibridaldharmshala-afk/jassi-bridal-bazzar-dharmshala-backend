@@ -2,7 +2,6 @@ const { asyncHandler } = require('../middleware/validate');
 const { requireObjectId } = require('../utils/validators');
 const mongoose = require('mongoose');
 const { applyProductStructure } = require('../services/masterConfigurationService');
-const multer = require('multer');
 const fs = require('fs/promises');
 const path = require('path');
 const slugify = require('../utils/slugify');
@@ -43,23 +42,7 @@ function withDraftStore(req, payload = {}) {
   return next;
 }
 
-exports.bulkUploadMiddleware = multer({
-  storage: multer.diskStorage({
-    destination(req, file, cb) {
-      cb(null, require('path').join(__dirname, '..', 'uploads'));
-    },
-    filename(req, file, cb) {
-      const safeName = file.originalname.replace(/[^a-z0-9.]+/gi, '-').toLowerCase();
-      cb(null, `${require('crypto').randomUUID()}-${safeName}`);
-    },
-  }),
-  fileFilter(req, file, cb) {
-    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-    if (!allowedTypes.includes(file.mimetype)) return cb(new Error('Only jpg, jpeg, png and webp images are allowed'));
-    cb(null, true);
-  },
-  limits: { fileSize: 2 * 1024 * 1024, files: 30 },
-});
+exports.bulkUploadMiddleware = require('../middleware/photoUploadMiddleware').createPhotoUpload({ files: 30 });
 
 exports.bulkUpload = async (req, res, next) => {
   try {
@@ -80,7 +63,7 @@ exports.bulkUpload = async (req, res, next) => {
           slug: uniqueDraftSlug(group.name || files[0]?.originalName || `draft-${index + 1}`),
           sku: `DRAFT-${Date.now()}-${String(index + 1).padStart(2, '0')}`,
           image: files[0]?.url,
-          images: files.map((file, fileIndex) => ({ url: file.url, publicId: file.publicId, primary: fileIndex === 0 })),
+          images: files.map((file, fileIndex) => ({ ...file, primary: fileIndex === 0 })),
           videos: [],
           category: undefined,
           subCategory: '',
@@ -426,7 +409,7 @@ exports.publishSelected = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     message: failed.length ? `${published.length} draft${published.length === 1 ? '' : 's'} published; ${failed.length} need attention.` : 'Selected drafts published successfully',
-    data: { products: published.filter(Boolean), results, summary: summarizePublishResults(results) },
+    data: { products: await Promise.all(published.filter(Boolean).map(async product => ({ ...product.toObject(), rentalOffers: await require('../services/productRentalPricing').offers(product) }))), results, summary: summarizePublishResults(results) },
   });
 });
 
@@ -806,21 +789,11 @@ async function cleanupTempFiles(files = []) {
 
 async function cleanupUnreferencedDraftMedia(draft) {
   const entries = [
-    ...(Array.isArray(draft.images) ? draft.images.flatMap(item => [item, item.background?.original, item.background?.edited].filter(Boolean)).map((item) => ({ ...item, resourceType: 'image' })) : []),
+    ...(Array.isArray(draft.images) ? draft.images.flatMap(item => [item, ...(item.variants || []), item.background?.original, ...(item.background?.original?.variants || []), item.background?.edited, ...(item.background?.edited?.variants || [])].filter(Boolean)).map((item) => ({ ...item, resourceType: 'image' })) : []),
     ...(Array.isArray(draft.videos) ? draft.videos.map((item) => ({ ...item, resourceType: 'video' })) : []),
   ].filter((item) => item?.url || item?.publicId);
   await Promise.allSettled(entries.map(async (entry) => {
-    const referenceFilter = { $or: [
-      ...(entry.url ? [{ 'images.url': entry.url }, { 'videos.url': entry.url }] : []),
-      ...(entry.publicId ? [{ 'images.publicId': entry.publicId }, { 'videos.publicId': entry.publicId }] : []),
-      ...(entry.url ? [{ 'images.background.original.url': entry.url }, { 'images.background.edited.url': entry.url }] : []),
-      ...(entry.publicId ? [{ 'images.background.original.publicId': entry.publicId }, { 'images.background.edited.publicId': entry.publicId }] : []),
-    ] };
-    if (!referenceFilter.$or.length) return;
-    const [draftReference, productReference] = await Promise.all([
-      ProductDraft.exists(referenceFilter), Product.exists(referenceFilter),
-    ]);
-    if (draftReference || productReference) return;
+    if (await require('../services/mediaReferenceService').referenced(entry)) return;
     const mediaUrl = String(entry.url || '');
     if (mediaUrl.startsWith('/uploads/') || /\/uploads\//i.test(mediaUrl)) { await deleteLocalUpload(mediaUrl); return; }
     const r2Base = String(process.env.R2_PUBLIC_URL || '').replace(/\/$/, '');

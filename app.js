@@ -139,6 +139,7 @@ app.use('/api/categories', optionalResolveStore, require('./routes/categoryRoute
 app.use('/api/cart', optionalResolveStore, require('./routes/cartRoutes'));
 app.use('/api/user/addresses', require('./routes/addressRoutes'));
 app.use('/api/wishlist', optionalResolveStore, require('./routes/wishlistRoutes'));
+app.use('/api/evidence', require('./routes/evidenceRoutes'));
 app.use('/api/orders', optionalResolveStore, require('./routes/orderRoutes'));
 app.use('/api/payments', optionalResolveStore, require('./routes/paymentRoutes'));
 

@@ -16,7 +16,8 @@ test('catalog Smart Fill sends bounded in-memory photos and retains evidence che
     assert.equal(body.contents[0].parts.filter(part => part.inlineData).length, 2);
     return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({ ...raw, sizes: ['M'], fabric: 'Silk', fieldSources: { price: { source: 'caption', quote: 'Price: 1299' }, sizes: { source: 'visual', quote: 'Looks medium' }, fabric: { source: 'visual', quote: 'Looks silky' } } }) }] } }] }) };
   });
-  const images = [1, 2].map(() => ({ mimeType: 'image/jpeg', buffer: Buffer.from([255, 216, 255, 1]) }));
+  const photo = await require('sharp')({ create: { width: 12, height: 10, channels: 3, background: '#700c2a' } }).jpeg().toBuffer();
+  const images = [1, 2].map(() => ({ mimeType: 'image/jpeg', buffer: photo }));
   const result = await analyzeProductContext({ caption: 'Name: Wine Saree\nPrice: 1299', images, categories });
   assert.equal(result.contextStatus, 'completed'); assert.equal(result.contextInputs.photos, true);
   assert.equal(result.price, 1299); assert.equal(result.fabric, ''); assert.deepEqual(result.sizes, []);
@@ -32,7 +33,7 @@ test('catalog Smart Fill blocks arbitrary URLs and only accepts image bytes from
   for (const url of ['http://169.254.169.254/latest/meta-data', 'https://catalog.example.evil.test/products/a.jpg', 'https://catalog.example/private/a.jpg', 'https://user:secret@catalog.example/products/a.jpg', '/uploads/../.env', '/uploads/%2e%2e%2f.env', 'file:///etc/passwd', '/uploads/a\\b.jpg']) assert.throws(() => mediaLocation(url));
   assert.equal(verifiedImage(Buffer.from([255, 216, 255, 1])).mimeType, 'image/jpeg');
   assert.throws(() => verifiedImage(Buffer.from('<svg></svg>')));
-  assert.throws(() => verifiedImage(Buffer.alloc(4 * 1024 * 1024 + 1)));
+  assert.throws(() => verifiedImage(Buffer.alloc(20 * 1024 * 1024 + 1)));
 });
 
 test('catalog Smart Fill controller scopes categories, returns notes fallback and never writes a product', async (t) => {

@@ -1,3 +1,4 @@
+const { publicProduct } = require('../utils/publicProduct');
 const { asyncHandler } = require('../middleware/validate');
 const { applyProductStructure, readConfiguration } = require('../services/masterConfigurationService');
 const Product = require('../models/Product');
@@ -82,8 +83,9 @@ function normalizeProductResponse(product, req) {
   const data = normalizeProductImages(isPrivateCatalog ? product : applyEffectivePricing(product), req);
   if (data.attributeValues instanceof Map) data.attributeValues = Object.fromEntries(data.attributeValues);
   if (!isPrivateCatalog) delete data.completeLookProductIds;
-  if (!isPrivateCatalog && req?.store?.catalogStructure?.commerce?.mode === 'RENTAL_ONLY') data.commerceMode = 'RENTAL_ONLY';
-  return normalizeProductSizing(data, data.category?.name || '');
+  if (!isPrivateCatalog) data.purchaseEnabled = data.commerceMode !== 'RENTAL_ONLY' && req?.store?.catalogStructure?.commerce?.mode !== 'RENTAL_ONLY' && req?.store?.salesEnabled !== false;
+  const sized = normalizeProductSizing(data, data.category?.name || '');
+  return isPrivateCatalog ? sized : publicProduct(sized);
 }
 
 // Reuse the exact public catalogue serializer in composed storefront endpoints.
@@ -111,6 +113,8 @@ exports.getProducts = asyncHandler(async (req, res) => {
     ],
   };
   const query = catalogQuery(req, isAdminRequest ? archiveFilter : publicVisibility);
+  if (!isAdminRequest) addQueryClause(query, await require('../services/catalogCommerceService').publicFilter(req));
+  if (isAdminRequest && ['out', 'low', 'in'].includes(req.query.stock)) addQueryClause(query, { commerceMode: { $ne: 'RENTAL_ONLY' } });
   const dynamicFilterKeys = Object.keys(req.query || {}).filter((key) => key.startsWith('attr_'));
   const catalogConfiguration = req.query.search || dynamicFilterKeys.length || req.query.includeFacets === 'true'
     ? await readConfiguration(req.store?._id)
@@ -228,7 +232,10 @@ exports.getProducts = asyncHandler(async (req, res) => {
     if (req.query.includeSummary === 'true') response.summary = await getCatalogSummary(req);
     return res.json(response);
   }
-  const products = await Product.find(query).populate('category').sort(sort);
+  // Legacy public arrays are bounded. Authorized management/export behavior stays explicit.
+  let finder = Product.find(query).populate('category').sort(sort);
+  if (!isAdminRequest) finder = finder.limit(readPagination(req.query, { defaultLimit: 24, maxLimit: 100 }).limit).maxTimeMS(5000);
+  const products = await finder;
   res.json(await require('../services/rentalProductPreview').enrich(products.map((product) => normalizeProductResponse(product, req)), req));
 });
 
@@ -247,9 +254,10 @@ async function getCatalogSummary(req) {
   const archived = catalogQuery(req, { isArchived: true });
   const low = catalogQuery(req, {
     isArchived: { $ne: true },
+    commerceMode: { $ne: 'RENTAL_ONLY' },
     $expr: { $and: [{ $gt: [availableStock, 0] }, stockWarning] },
   });
-  const out = catalogQuery(req, { isArchived: { $ne: true }, stock: { $lte: 0 } });
+  const out = catalogQuery(req, { isArchived: { $ne: true }, commerceMode: { $ne: 'RENTAL_ONLY' }, stock: { $lte: 0 } });
   const [total, active, lowStock, outOfStock, archivedCount, value] = await Promise.all([
     Product.countDocuments(current),
     Product.countDocuments(catalogQuery(req, { isArchived: { $ne: true }, isActive: true })),
@@ -309,6 +317,7 @@ async function buildPublicCatalogFacets(req, catalogConfiguration, configuredAtt
       { $or: [{ publishAt: { $exists: false } }, { publishAt: null }, { publishAt: { $lte: new Date() } }] },
     ],
   });
+  addQueryClause(visibility, await require('../services/catalogCommerceService').publicFilter(req));
   const [rawProducts, categories] = await Promise.all([
     Product.find(visibility).select('name sku brand category subCategory price originalPrice salePrice saleStartAt saleEndAt discountPercentage rating stock sizes colors variants fabric occasion description shortDescription tags attributeValues isFeatured isNewArrival isBestSeller showInTrending').lean(),
     Category.find(andFilter({ isActive: { $ne: false }, isArchived: { $ne: true } }, req.tenantFilter)).select('_id name slug previousSlugs').lean(),
@@ -546,7 +555,7 @@ exports.createProduct = asyncHandler(async (req, res) => {
     return created;
   });
   logAudit({ req, action: 'PRODUCT_CREATE', entityType: 'Product', entityId: product._id, storeId: product.storeId, after: auditSnapshot(product, PRODUCT_AUDIT_FIELDS) });
-  res.status(201).json(normalizeProductResponse(product, req));
+  res.status(201).json({ ...normalizeProductResponse(product, req), rentalOffers: await require('../services/productRentalPricing').offers(product, req.store) });
 });
 
 exports.updateProduct = asyncHandler(async (req, res) => {
@@ -622,7 +631,7 @@ exports.updateProduct = asyncHandler(async (req, res) => {
     before: auditSnapshot(existingProduct, PRODUCT_AUDIT_FIELDS),
     after: auditSnapshot(product, PRODUCT_AUDIT_FIELDS),
   });
-  res.json(normalizeProductResponse(product, req));
+  res.json({ ...normalizeProductResponse(product, req), rentalOffers: await require('../services/productRentalPricing').offers(product, req.store) });
 });
 
 exports.deleteProduct = asyncHandler(async (req, res) => {
@@ -945,13 +954,14 @@ async function cleanupRemovedProductImages(existingImages = [], nextImages = [])
 }
 
 function imageAssets(image) {
-  const assets = [image, image?.background?.original, image?.background?.edited].filter(Boolean);
+  const assets = [image, ...(image?.variants || []), image?.background?.original, ...(image?.background?.original?.variants || []), image?.background?.edited, ...(image?.background?.edited?.variants || [])].filter(Boolean);
   return [...new Map(assets.map(asset => [asset.publicId || asset.url, asset])).values()];
 }
 
 async function safeDeleteImage(image) {
   if (!isR2Configured()) return;
   try {
+    if (await require('../services/mediaReferenceService').referenced(image)) return;
     await deleteImageFromR2(image);
   } catch {
     // Ignore storage cleanup failures so product save/delete doesn't break.

@@ -1,3 +1,5 @@
+const { publicOrderLines, publicSaleOrder } = require('../utils/publicProduct');
+const { assertStoreCanAcceptOrders } = require('../middleware/storeMiddleware');
 const Order = require('../models/Order');
 const crypto = require('node:crypto');
 const Settings = require('../models/Settings');
@@ -63,7 +65,7 @@ function decorateOrder(order, options = {}) {
 }
 
 function publicCustomerOrder(order) {
-  const value = order?.toObject ? order.toObject() : { ...(order || {}) };
+  const value = publicSaleOrder(order);
   delete value.packageVerification;
   delete value.fraudProtectionSnapshot;
   if (value.codVerification) value.codVerification = publicVerification(value.codVerification);
@@ -72,6 +74,8 @@ function publicCustomerOrder(order) {
   value.orderItems = (value.orderItems || []).map(item => { const copy = { ...item }; delete copy.uniqueItemIds; return copy; });
   return value;
 }
+
+function respondOrder(req, res, order) { return res.json(managerRequest(req) ? order : publicCustomerOrder(order)); }
 
 function fraudOrderFields(settings, finalAmount) {
   const snapshot = snapshotForOrder(settings, finalAmount);
@@ -118,6 +122,7 @@ function isOwnerOrAdmin(order, user, req) {
  * calculating totals in the browser.
  */
 exports.quoteOrder = asyncHandler(async (req, res) => {
+  assertStoreCanAcceptOrders(req.store);
   const customerRestrictions = await getCustomerRestrictions({ storeId: req.store?._id, userId: req.user?._id });
   await assertCustomerCanCheckout({ storeId: req.store?._id, userId: req.user?._id, paymentMethod: req.body?.paymentMethod });
   const settings = await getStoreSettings(req.tenantFilter || {});
@@ -144,7 +149,7 @@ exports.quoteOrder = asyncHandler(async (req, res) => {
     paymentMethod: draft.paymentMethod,
     shipping: draft.shippingQuote,
     totals: draft.totals,
-    items: draft.items,
+    items: publicOrderLines(draft.items),
     paymentOptions: applyCustomerRestrictionsToPaymentOptions(await applyCustomerRtoToPaymentOptions(buildPaymentOptions(settings, {
       razorpayConfigured: isRazorpayConfigured(),
       orderAmount: draft.totals.finalAmount - draft.totals.codCharge,
@@ -169,6 +174,7 @@ exports.createOrder = asyncHandler(async (req, res) => {
     await consumePurchasedCart(existing).catch(() => null);
     return res.status(200).json(publicCustomerOrder(existing));
   }
+  assertStoreCanAcceptOrders(req.store);
   await assertCustomerCanCheckout({ storeId: req.store?._id, userId: req.user?._id, paymentMethod: 'COD' });
 
   const shippingAddress = assertShippingAddress(req.body?.shippingAddress);
@@ -636,7 +642,7 @@ exports.cancelOrder = asyncHandler(async (req, res) => {
   const reason = optionalString(req.body?.reason, 'reason', { max: 300 });
   const comment = optionalString(req.body?.comment, 'comment', { max: 500 });
   const note = `${req.user.role === 'admin' ? 'Cancelled by admin' : 'Cancelled by customer'}${reason ? `: ${reason}` : ''}`;
-  res.json(await cancelOrderInternal(order, { req, actor: req.user, note: comment ? `${note}. ${comment}` : note, reasonCode: reason || 'OTHER', comment }));
+  respondOrder(req, res, await cancelOrderInternal(order, { req, actor: req.user, note: comment ? `${note}. ${comment}` : note, reasonCode: reason || 'OTHER', comment }));
 });
 
 async function completeItemCancellationInventory(order, operationId, req) {
@@ -680,7 +686,7 @@ exports.cancelOrderItem = asyncHandler(async (req, res) => {
   const totalActive = order.orderItems.reduce((sum, entry) => sum + Math.max(0, Number(entry.quantity || 0) - Number(entry.cancelledQuantity || 0)), 0);
   if (quantity === totalActive) {
     const note = `${req.user.role === 'admin' ? 'Cancelled by admin' : 'Cancelled by customer'}: ${reasonCode}${comment ? `. ${comment}` : ''}`;
-    return res.json(await cancelOrderInternal(order, { req, actor: req.user, note, reasonCode, comment }));
+    return respondOrder(req, res, await cancelOrderInternal(order, { req, actor: req.user, note, reasonCode, comment }));
   }
   if (order.paymentMethod !== 'COD' && order.paymentStatus !== 'Paid' && !['PAID', 'PARTIALLY_REFUNDED'].includes(order.paymentState)) {
     throw new ApiError('ORDER_ITEM_CANCELLATION_UNAVAILABLE', 'A pending online payment amount cannot be changed. Cancel the complete order and place it again with the required items.', { statusCode: 409 });
@@ -721,7 +727,7 @@ exports.cancelOrderItem = asyncHandler(async (req, res) => {
   order = await processItemCancellationRefund(order._id, operationId);
   await logAudit({ req, action: 'ORDER_ITEM_CANCEL', entityType: 'Order', entityId: order._id, storeId: order.storeId, after: { orderItemId: req.params.itemId, quantity, reasonCode, operationId, adjustedFinalAmount: order.adjustedFinalAmount } });
   notifyLater({ userId: order.user, storeId: order.storeId, event: 'ORDER_ITEM_CANCELLED', title: 'Order item cancelled', message: `${quantity} unit(s) were cancelled. Refund status is available in order details.`, metadata: { orderId: String(order._id), orderItemId: String(req.params.itemId), operationId } });
-  res.json(decorateOrder(order));
+  respondOrder(req, res, decorateOrder(order));
 });
 
 async function recordManualResolutionRefund(order, { amount, reference, note, sourceType, sourceId }) {
@@ -981,7 +987,7 @@ async function buildReceipt(order) {
     orderDate: order.createdAt,
     customer: order.user,
     shippingAddress: order.shippingAddress,
-    items: order.orderItems,
+    items: publicOrderLines(order.orderItems),
     paymentMethod: order.paymentMethod,
     paymentProvider: order.paymentProvider,
     paymentStatus: order.paymentStatus,
@@ -1052,3 +1058,5 @@ exports.updateShipment = asyncHandler(async (req, res) => {
 exports.assertCheckoutReady = assertCheckoutReady;
 exports.assertShippingAddress = assertShippingAddress;
 exports.cancelOrderInternal = cancelOrderInternal;
+
+exports.publicCustomerOrder = publicCustomerOrder;

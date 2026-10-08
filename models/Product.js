@@ -15,7 +15,7 @@ const variantSchema = new mongoose.Schema({
   },
   price: Number,
   originalPrice: Number,
-  images: [{ url: String, publicId: String, primary: { type: Boolean, default: false } }],
+  images: [{ ...require('./responsiveImageFields'), url: String, publicId: String, primary: { type: Boolean, default: false } }],
   isActive: { type: Boolean, default: true },
 }, { _id: true });
 
@@ -55,7 +55,7 @@ const productSchema = new mongoose.Schema({
   gstRate: { type: Number, min: 0, max: 100, default: 0 },
   hsnCode: { type: String, trim: true, default: '' },
   barcode: { type: String, trim: true, default: '' },
-  images: [{ url: String, publicId: String, primary: { type: Boolean, default: false }, background: { type: imageBackground, default: undefined }, sourceFrame: { type: new mongoose.Schema({ timestampSeconds: Number, qualityScore: Number, viewType: String, width: Number, height: Number, selectionVersion: String }, { _id: false }), default: undefined } }],
+  images: [{ ...require('./responsiveImageFields'), url: String, publicId: String, primary: { type: Boolean, default: false }, background: { type: imageBackground, default: undefined }, sourceFrame: { type: new mongoose.Schema({ timestampSeconds: Number, qualityScore: Number, viewType: String, width: Number, height: Number, selectionVersion: String }, { _id: false }), default: undefined } }],
   videos: [{ url: String, publicId: String, thumbnail: String }],
   sizes: [String],
   sizingMode: { type: String, enum: ['auto', 'sized', 'free-size'], default: 'auto' },

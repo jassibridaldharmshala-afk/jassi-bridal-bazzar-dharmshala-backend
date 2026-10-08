@@ -10,7 +10,7 @@ const { ApiError } = require('../utils/apiError');
 const CARD_FIELDS = '_id slug name category subCategory industry occasion colors tags price originalPrice salePrice saleStartAt saleEndAt stock variants sizingMode sizes images primaryImage rating numReviews commerceMode isNewArrival isBestSeller';
 const FLAGS = 'occasionShoppingEnabled recentlyViewedEnabled completeLookEnabled';
 function publicFilter(req, extra = {}) {
-  return andFilter({ $and: [{ isActive: true, isArchived: { $ne: true } }, { $or: [{ publishAt: { $exists: false } }, { publishAt: null }, { publishAt: { $lte: new Date() } }] }, extra] }, req.tenantFilter);
+  return andFilter({ $and: [{ isActive: true, isArchived: { $ne: true } }, { $or: [{ publishAt: { $exists: false } }, { publishAt: null }, { publishAt: { $lte: new Date() } }] }, req.commerceFilter || {}, extra] }, req.tenantFilter);
 }
 function tokens(value) {
   return [...new Map(String(value || '').split(/[,;|]/).map(s => s.trim().replace(/\s+/g, ' ')).filter(s => s && s.length <= 64 && !/[<>\x00-\x1f]/.test(s)).map(s => [s.toLocaleLowerCase('en-IN'), s])).values()].slice(0, 12);
@@ -96,12 +96,13 @@ async function completeLook(req) {
   const extra = curated.length ? { _id: { $in: curated } } : terms.length ? { $or: [{ category: { $in: matchingCategories.map(row => row._id) } }, { name: { $regex: terms.join('|'), $options: 'i' } }, { subCategory: { $regex: terms.join('|'), $options: 'i' } }] } : null;
   if (!extra) return { enabled: true, products: [] };
   const candidates = await Product.find(publicFilter(req, { $and: [extra, { _id: { $ne: source._id } }] })).select(CARD_FIELDS).populate('category', 'name slug').sort('_id').limit(curated.length ? 8 : 120).maxTimeMS(4000).lean();
-  const rentalOnly = prefs.mode === 'RENTAL_ONLY' || source.commerceMode === 'RENTAL_ONLY';
-  const rentals = rentalOnly && prefs.rentalEnabled && req.store?._id ? await Listing.find({ storeId: req.store._id, productId: { $in: candidates.map(p => p._id) }, active: true }).select('productId dailyRatePaise depositPaise').maxTimeMS(4000).lean() : [];
+  const rentalOnly = prefs.mode === 'RENTAL_ONLY' || req.query?.mode === 'rent' || source.commerceMode === 'RENTAL_ONLY';
+  const rentals = rentalOnly && prefs.rentalEnabled && req.store?._id ? await Listing.find({ storeId: req.store._id, productId: { $in: candidates.map(p => p._id) }, active: true }).maxTimeMS(4000).lean() : [];
   const rates = new Map();
-  for (const row of rentals) { const key = String(row.productId); if (!rates.has(key) || row.dailyRatePaise < rates.get(key).dailyRatePaise) rates.set(key, row); }
+  const rentalReadiness = await require('./rentalSetupService').batchReadiness(req.store, rentals);
+  for (const row of rentals.filter(row => rentalReadiness.get(String(row._id)).ready)) { const key = String(row.productId); if (!rates.has(key) || row.dailyRatePaise < rates.get(key).dailyRatePaise) rates.set(key, row); }
   const products = candidates.filter(p => rentalOnly ? rates.has(String(p._id)) : p.commerceMode !== 'RENTAL_ONLY' && saleAvailable(p))
-    .map(p => ({ ...p, discoveryPurchase: rentalOnly ? 'RENTAL' : 'SALE', ...(rentalOnly ? { rentalPreview: { dailyRatePaise: rates.get(String(p._id)).dailyRatePaise, depositPaise: rates.get(String(p._id)).depositPaise } } : {}), score: curated.length ? 100 - curated.indexOf(String(p._id)) : complementScore(source, p) }))
+    .map(p => ({ ...p, discoveryPurchase: rentalOnly ? 'RENTAL' : 'SALE', ...(rentalOnly ? { rentalPreview: { listingId: String(rates.get(String(p._id))._id), dailyRatePaise: rates.get(String(p._id)).dailyRatePaise, depositPaise: rates.get(String(p._id)).depositPaise } } : {}), score: curated.length ? 100 - curated.indexOf(String(p._id)) : complementScore(source, p) }))
     .filter(p => p.score > 0).sort((a, b) => b.score - a.score || String(a._id).localeCompare(String(b._id))).slice(0, 8).map(({ score, ...p }) => p);
   return { enabled: true, products, strategy: curated.length ? 'OWNER_CURATED' : 'CONTEXT_MATCHED' };
 }

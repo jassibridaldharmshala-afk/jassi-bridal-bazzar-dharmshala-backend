@@ -36,6 +36,7 @@ router.use('/smart-fill', require('./workflowSmartFillRoutes'));
 
 router.get('/products', requireStorePermission('catalog.read'), product.getProducts);
 router.get('/products/smart-fill/status', requireStorePermission('catalog.read'), smartFill.status);
+router.post('/products/photo-grouping', requireStorePermission('catalog.write'), requireStoreFeature('aiProduct'), smartFill.limiter, smartFill.groupUpload, smartFill.groupPhotos);
 router.post('/products/smart-fill', requireStorePermission('catalog.write'), requireStoreFeature('aiProduct'), smartFill.limiter, smartFill.fill);
 router.get('/products/quick-analyze/status', requireStorePermission('catalog.read'), product.getQuickAddVisionStatus);
 router.post('/products/quick-analyze', requireStorePermission('catalog.write'), requireStoreFeature('aiProduct'), product.analyzeQuickAdd);

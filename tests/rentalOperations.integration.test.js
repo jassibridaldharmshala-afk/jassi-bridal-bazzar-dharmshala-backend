@@ -1,3 +1,4 @@
+require('./rentalPaymentFixture');
 const { test, before, after, beforeEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -17,7 +18,7 @@ const dates = () => { const day = A.localKey(new Date(Date.now() + 5 * A.DAY), '
 before(async () => { mock.method(require('../services/controlPlaneClient'), 'licenseStatus', async () => ({ managed: false, status: 'ACTIVE' })); await startTestEnvironment(); });
 after(async () => { await stopTestEnvironment(); mock.restoreAll(); });
 beforeEach(async () => {
-  await resetDatabase(); store = await ensureDefaultStore(); admin = await createAdmin(); customer = await createCustomer();
+  await resetDatabase(); store = await ensureDefaultStore(); await require('./rentalPaymentFixture').configure(store); admin = await createAdmin(); customer = await createCustomer();
   product = await createProduct({ storeId: store._id, sku: op(), commerceMode: 'SALE_AND_RENTAL', sizingMode: 'free-size', sizes: [], isFeatured: true, showOnHomepage: true });
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY } });
   asset = await S.saveAsset(store, { productId: String(product._id), poolKey: 'outfit', code: 'OUTFIT-01', label: 'Bridal outfit' });

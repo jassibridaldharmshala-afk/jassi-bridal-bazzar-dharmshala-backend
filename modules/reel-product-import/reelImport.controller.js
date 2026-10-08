@@ -470,7 +470,7 @@ async function updateCandidate(req, res) {
         const addedPhotos = draft.images.filter((image) => !candidate.frames.some((frame) => frame.url === image.url)).map((image) => image.toObject());
         const chosenFrame = frames.some((frame) => String(frame._id) === String(candidate.adminOverrides.primaryFrameId));
         const addedCover = !chosenFrame && addedPhotos.find((image) => image.primary);
-        draft.images = [...frames.map((frame, index) => ({ url: frame.url, publicId: frame.storageKey, primary: !addedCover && index === 0, sourceFrame: { timestampSeconds: frame.timestampSeconds, qualityScore: frame.qualityScore, viewType: frame.viewType, width: frame.width, height: frame.height, selectionVersion: frame.selectionVersion } })), ...addedPhotos.map((image) => ({ ...image, primary: image === addedCover }))];
+        draft.images = [...frames.map((frame, index) => ({ url: frame.url, publicId: frame.storageKey, variants: frame.variants, primary: !addedCover && index === 0, sourceFrame: { timestampSeconds: frame.timestampSeconds, qualityScore: frame.qualityScore, viewType: frame.viewType, width: frame.width, height: frame.height, selectionVersion: frame.selectionVersion } })), ...addedPhotos.map((image) => ({ ...image, primary: image === addedCover }))];
         if (draft.images.length && !draft.images.some((image) => image.primary)) draft.images[0].primary = true;
         draft.image = draft.images.find((image) => image.primary)?.url || '';
       }
@@ -728,7 +728,7 @@ async function createDraftForCandidate(job, candidate, userId) {
     slug: `${slugify(name || 'reel-product')}-${String(candidate._id).slice(-6)}`,
     sku: `REEL-${String(candidate._id).slice(-10).toUpperCase()}`,
     image: frames[0]?.url || '',
-    images: frames.map((frame, index) => ({ url: frame.url, publicId: frame.storageKey, primary: index === 0,
+    images: frames.map((frame, index) => ({ url: frame.url, publicId: frame.storageKey, variants: frame.variants, primary: index === 0,
       sourceFrame: { timestampSeconds: frame.timestampSeconds, qualityScore: frame.qualityScore, viewType: frame.viewType || 'unknown', width: frame.width, height: frame.height, selectionVersion: frame.selectionVersion } })),
     videos: [],
     category: category?._id,
