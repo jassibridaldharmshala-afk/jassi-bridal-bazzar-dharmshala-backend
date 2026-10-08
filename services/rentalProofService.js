@@ -1,5 +1,5 @@
 const crypto = require('node:crypto');
-const sharp = require('sharp');
+const { compressPhotoBuffer } = require('./photoCompressionService');
 const M = require('../models/Rental');
 const A = require('./rentalAlgorithms');
 const { ApiError } = require('../utils/apiError');
@@ -24,14 +24,11 @@ async function upload(store, bookingId, input, files, actorId) {
     if (!Buffer.isBuffer(file.buffer) || file.buffer.length > 1024 * 1024) error('Each uploaded photo must be below 1 MB.');
     let bytes;
     try {
-      const processor = sharp(file.buffer, { limitInputPixels: 20000000 });
-      const metadata = await processor.metadata();
-      if (!['jpeg', 'png', 'webp'].includes(metadata.format) || (metadata.pages || 1) > 1) error('Use a single JPEG, PNG or WebP photo, not SVG or animation.');
-      bytes = await processor.rotate().resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
+      const photo = await compressPhotoBuffer(file.buffer, { forceWebp: true });
+      bytes = photo.buffer;
+      images.push({ bytes, mimeType: photo.mimeType, digest: crypto.createHash('sha256').update(bytes).digest('hex') });
     }
-    catch { error('One condition photo is invalid.'); }
-    if (bytes.length > 1024 * 1024) error('Compress the condition photo below 1 MB.');
-    images.push({ bytes, mimeType: 'image/webp', digest: crypto.createHash('sha256').update(bytes).digest('hex') });
+    catch (failure) { error(`One condition photo is invalid. ${failure.message || ''}`); }
   }
   const S = require('./rentalService');
   return S.transaction(store, async session => {

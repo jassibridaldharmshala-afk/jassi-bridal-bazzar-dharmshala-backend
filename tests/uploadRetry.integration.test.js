@@ -72,7 +72,7 @@ test('removed media receipts cannot resurrect deleted objects, and old clients s
   assert.equal(await runUploadRequest({ headers: {} }, async context => { assert.equal(context.managed, false); return 'legacy'; }), 'legacy');
 });
 
-const image = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AA/vuUAAA=', 'base64');
+const image = Buffer.from('UklGRjIAAABXRUJQVlA4ICYAAACQAQCdASoCAAIAAUAmJZACdLoAA5gA/vLrfrynxNt/V2J8KCwAAA==', 'base64');
 async function multipart(token, key, endpoint = '/api/admin/product-drafts/bulk-upload') {
   const form = new FormData(); form.append('images', new Blob([image], { type: 'image/webp' }), 'one.webp'); form.append('groupMode', 'single');
   const response = await fetch(`${getBaseUrl()}${endpoint}`, { method: 'POST', body: form, headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': key } });

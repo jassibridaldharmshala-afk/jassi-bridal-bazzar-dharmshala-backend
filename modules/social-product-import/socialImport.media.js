@@ -9,6 +9,7 @@ const network = require('./socialImport.network');
 const r2 = require('../../services/r2Upload');
 const cloudinary = require('../../services/cloudinaryUpload');
 const { selectProductFrames } = require('../../services/productFrameSelection.service');
+const { preparePhotoFile } = require('../../services/photoCompressionService');
 
 const uploads = path.resolve(__dirname, '../../uploads');
 const storageReady = () => process.env.NODE_ENV !== 'production' || r2.isR2Configured() || cloudinary.isCloudinaryConfigured();
@@ -62,14 +63,14 @@ async function downloadVideo(url, directory, signal, frameCount = 12) {
 async function persist(file, jobId, video = false) {
   if (!storageReady()) throw new ApiError('SOCIAL_STORAGE_REQUIRED', 'Permanent media storage must be configured before importing products.');
   const name = `social-${jobId}-${file.id}.${video ? 'mp4' : 'webp'}`;
-  const input = { path: file.path, originalname: name, mimetype: video ? 'video/mp4' : 'image/webp', size: (await fs.stat(file.path)).size };
+  const input = await preparePhotoFile({ path: file.path, originalname: name, mimetype: video ? 'video/mp4' : 'image/webp', size: (await fs.stat(file.path)).size });
   let stored; let provider;
   if (r2.isR2Configured()) { provider = 'r2'; stored = await (video ? r2.uploadFileToR2 : r2.uploadImageToR2)(input, { folder: 'products/social-imports' }); }
   else if (cloudinary.isCloudinaryConfigured()) { provider = 'cloudinary'; stored = await (video ? cloudinary.uploadVideo : cloudinary.uploadImage)(input, { folder: 'products/social-imports' }); }
-  else { provider = 'local'; await fs.mkdir(uploads, { recursive: true }); await fs.copyFile(file.path, path.join(uploads, name)); stored = { url: '/uploads/' + name, publicId: name }; }
+  else { provider = 'local'; await fs.mkdir(uploads, { recursive: true }); if (input.buffer) await fs.writeFile(path.join(uploads, name), input.buffer); else await fs.copyFile(file.path, path.join(uploads, name)); stored = { url: '/uploads/' + name, publicId: name }; }
   return { id: file.id, url: stored.url, publicId: stored.publicId, provider, kind: file.kind, timestamp: file.timestamp,
     qualityScore: file.qualityScore, sharpnessScore: file.sharpnessScore, exposureScore: file.exposureScore, recommended: file.recommended,
     recommendedCover: file.recommendedCover, viewType: file.viewType, qualityWarnings: file.qualityWarnings,
-    width: file.width, height: file.height, selectionVersion: file.selectionVersion };
+    width: input.photo?.width || file.width, height: input.photo?.height || file.height, sizeBytes: input.size, mimeType: input.mimetype, selectionVersion: file.selectionVersion };
 }
 module.exports = { downloadImage, downloadVideo, persist, storageReady, imageType, run };

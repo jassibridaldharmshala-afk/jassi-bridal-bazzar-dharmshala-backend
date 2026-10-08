@@ -6,6 +6,7 @@ const fsSync = require('fs');
 const { spawn } = require('child_process');
 const { photoFile } = require('../modules/social-workspace/media');
 const { sanitizeProductImages } = require('../utils/imageUtils');
+const { compressPhotoBuffer } = require('./photoCompressionService');
 const workerRoot = path.resolve(__dirname, '../../ai-video-worker');
 const python = path.join(workerRoot, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 const modelDirectory = path.join(workerRoot, '.models');
@@ -57,10 +58,12 @@ function isConfigured() { const { url, token } = configuration(); return Boolean
 async function removeBackground(buffer, fetchImpl = fetch) {
   const { url, token } = configuration();
   if (!isConfigured()) throw new ApiError('BACKGROUND_UNAVAILABLE', 'Background editing needs the image worker. Ask your administrator to connect it; original uploads still work.', { statusCode: 503 });
+  buffer = (await compressPhotoBuffer(buffer)).buffer;
   try {
     if (!(url && token) && hasLocalWorker()) {
       const output = await runLocal(buffer);
-      return { image: `data:image/png;base64,${output.toString('base64')}` };
+      const photo = await compressPhotoBuffer(output);
+      return { image: `data:${photo.mimeType};base64,${photo.buffer.toString('base64')}` };
     }
     const response = await fetchImpl(`${url}/internal/images/remove-background`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/octet-stream' },
@@ -76,7 +79,8 @@ async function removeBackground(buffer, fetchImpl = fetch) {
     }
     const output = Buffer.concat(chunks);
     if (!output.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('Invalid PNG');
-    return { image: `data:image/png;base64,${output.toString('base64')}` };
+    const photo = await compressPhotoBuffer(output);
+    return { image: `data:${photo.mimeType};base64,${photo.buffer.toString('base64')}` };
   } catch {
     throw new ApiError('BACKGROUND_PROCESSING_FAILED', 'Background processing could not finish. Retry shortly or keep the original photo. The image worker must have its background model installed.', { statusCode: 503 });
   }

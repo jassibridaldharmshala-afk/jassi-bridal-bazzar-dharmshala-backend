@@ -31,7 +31,7 @@ exports.uploadReviewPhotos = async function uploadReviewPhotos(req, res, next) {
       throw new ApiError('PERSISTENT_UPLOAD_STORAGE_REQUIRED', 'Review photos need Cloudflare R2 or Cloudinary in production', { statusCode: 503 });
     }
     const files = await uploadMedia(req, { folder: 'reviews' });
-    res.status(201).json({ files: files.map((file) => ({ url: file.url, publicId: file.publicId, provider: file.provider || (isR2Configured() ? 'r2' : isCloudinaryConfigured() ? 'cloudinary' : 'local') })) });
+    res.status(201).json({ files: files.map((file) => ({ url: file.url, publicId: file.publicId, mimeType: file.mimeType, sizeBytes: file.sizeBytes, provider: file.provider || (isR2Configured() ? 'r2' : isCloudinaryConfigured() ? 'cloudinary' : 'local') })) });
   } catch (error) {
     await cleanup(req.files || []);
     next(error);

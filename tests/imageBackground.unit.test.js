@@ -23,11 +23,11 @@ test('worker communication forwards bytes securely and rejects invalid responses
   const previous = { url: process.env.AI_VIDEO_WORKER_URL, token: process.env.AI_VIDEO_WORKER_SERVICE_TOKEN };
   process.env.AI_VIDEO_WORKER_URL = 'https://worker.example'; process.env.AI_VIDEO_WORKER_SERVICE_TOKEN = 'test-worker-token';
   t.after(() => { for (const [key, value] of Object.entries({ AI_VIDEO_WORKER_URL: previous.url, AI_VIDEO_WORKER_SERVICE_TOKEN: previous.token })) value === undefined ? delete process.env[key] : process.env[key] = value; });
-  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  const result = await background.removeBackground(Buffer.from('source'), async (url, options) => {
+  const png = await require('sharp')({ create: { width: 2, height: 2, channels: 4, background: '#704032' } }).png().toBuffer();
+  const result = await background.removeBackground(png, async (url, options) => {
     assert.equal(url, 'https://worker.example/internal/images/remove-background');
     assert.equal(options.headers.authorization, 'Bearer test-worker-token');
-    assert.equal(options.redirect, 'error'); assert.equal(options.body.toString(), 'source');
+    assert.equal(options.redirect, 'error'); assert.deepEqual(options.body, png);
     return new Response(png, { headers: { 'content-type': 'image/png' } });
   });
   assert.equal(result.image, `data:image/png;base64,${png.toString('base64')}`);

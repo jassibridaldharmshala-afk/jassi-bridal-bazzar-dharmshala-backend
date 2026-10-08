@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs/promises');
 const fsSync = require('fs');
 const path = require('path');
+const { preparePhotoFile } = require('./photoCompressionService');
 const { DeleteObjectCommand, HeadObjectCommand, S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 
 let r2Client;
@@ -85,9 +86,10 @@ async function alreadyStored(objectKey, options) {
 }
 
 async function uploadImageToR2(file, options = {}) {
-  const objectKey = buildObjectKey(file, { ...options, extension: 'webp' });
+  file = await preparePhotoFile(file);
+  const objectKey = buildObjectKey(file, { ...options, extension: resolveFileExtension(file) });
   if (!await alreadyStored(objectKey, options)) {
-    const buffer = await fs.readFile(file.path);
+    const buffer = file.buffer || await fs.readFile(file.path);
     await getR2Client().send(new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: objectKey,
@@ -107,6 +109,7 @@ async function uploadImageToR2(file, options = {}) {
 }
 
 async function uploadFileToR2(file, options = {}) {
+  if (String(file.mimetype || '').startsWith('image/')) return uploadImageToR2(file, options);
   const extension = resolveFileExtension(file);
   const objectKey = buildObjectKey(file, { ...options, extension });
   if (await alreadyStored(objectKey, options)) return { url: buildPublicUrl(objectKey), publicId: objectKey, originalName: file.originalname };

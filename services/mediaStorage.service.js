@@ -207,6 +207,11 @@ async function createSignedReadUrl({ provider, storageKey, url }) {
 }
 
 async function putBufferToR2(buffer, storageKey, contentType = 'application/octet-stream') {
+  if (String(contentType).startsWith('image/')) {
+    const photo = await require('./photoCompressionService').compressPhotoBuffer(buffer);
+    buffer = photo.buffer;
+    contentType = photo.mimeType;
+  }
   await getR2Client().send(new PutObjectCommand({
     Bucket: process.env.R2_BUCKET_NAME,
     Key: storageKey,

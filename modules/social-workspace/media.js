@@ -85,7 +85,7 @@ async function persist(file, video, identity) {
   return (await persistGeneratedFile({ path: file, mimetype: video ? 'video/mp4' : 'image/jpeg', originalname: video ? 'product-reel.mp4' : 'product-photo.jpg' }, identity, { video, folder: 'social-studio' })).url;
 }
 async function prepare(post, video = false) {
-  const recipe = ['social-render-v2', storageFingerprint(), process.env.PUBLIC_API_URL || '', post.images.slice(0, 6), ...(video ? [post.productName || '', post.productPrice ?? null] : [])];
+  const recipe = ['social-render-v3-photo100kb', storageFingerprint(), process.env.PUBLIC_API_URL || '', post.images.slice(0, 6), ...(video ? [post.productName || '', post.productPrice ?? null] : [])];
   const identity = { namespace: video ? 'social-video' : 'social-photos', ownerId: post._id, storeId: post.storeId, slot: 'recipe', recipe };
   const key = generatedUploadId(identity);
   const checkpoint = async (slot, url) => {
@@ -151,7 +151,7 @@ async function removeAssets(values = []) {
         const root = new URL(process.env.PUBLIC_API_URL || 'http://localhost:5000');
         const local = new URL(value, root);
         const name = path.basename(decodeURIComponent(local.pathname));
-        if (local.origin === root.origin && local.pathname === `/uploads/${name}` && /^(?:social-[a-f0-9-]+|retry-[a-f0-9]{64})\.(?:jpg|mp4)$/i.test(name)) await fs.unlink(path.join(uploads, name)).catch(() => {});
+        if (local.origin === root.origin && local.pathname === `/uploads/${name}` && /^(?:social-[a-f0-9-]+|retry-[a-f0-9]{64})\.(?:jpg|png|webp|mp4)$/i.test(name)) await fs.unlink(path.join(uploads, name)).catch(() => {});
       } catch { /* Invalid/foreign URLs are never deletion targets. */ }
       continue;
     }
@@ -165,7 +165,7 @@ async function removeAssets(values = []) {
         if (match) await require('../../services/cloudinaryUpload').deleteFile(decodeURIComponent(match[1]), /\.(?:mp4|mov|webm)$/i.test(url.pathname) ? 'video' : 'image');
       } else if (/^\/uploads\/(?:social-|retry-)/.test(url.pathname)) {
         const name = path.basename(decodeURIComponent(url.pathname));
-        if (/^(?:social-[a-f0-9-]+|retry-[a-f0-9]{64})\.(?:jpg|mp4)$/i.test(name)) await fs.unlink(path.join(uploads, name)).catch(() => {});
+        if (/^(?:social-[a-f0-9-]+|retry-[a-f0-9]{64})\.(?:jpg|png|webp|mp4)$/i.test(name)) await fs.unlink(path.join(uploads, name)).catch(() => {});
       }
     } catch { /* Retention cleanup retries later; original catalogue media is never passed here. */ }
   }

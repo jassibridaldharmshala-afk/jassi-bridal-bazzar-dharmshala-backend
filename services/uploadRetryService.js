@@ -95,16 +95,17 @@ async function runUploadRequest(req, work, { replay, resume = false, recordOnly 
 }
 
 async function persistLocal(file, options = {}) {
-  if (!options.uploadId) return { url: `/uploads/${path.basename(file.filename)}`, publicId: path.basename(file.filename), originalName: file.originalname, provider: 'local' };
-  const extension = path.extname(file.originalname || '').replace(/[^.a-z0-9]/gi, '').slice(0, 12) || '.bin';
-  const name = `retry-${options.uploadId}${extension.toLowerCase()}`;
+  file = await require('./photoCompressionService').preparePhotoFile(file);
+  const extension = file.mimetype === 'image/webp' ? '.webp' : file.mimetype === 'image/png' ? '.png' : ['image/jpeg', 'image/jpg'].includes(file.mimetype) ? '.jpg' : path.extname(file.originalname || '').replace(/[^.a-z0-9]/gi, '').slice(0, 12) || '.bin';
+  const base = path.basename(file.filename || file.originalname || 'media').replace(/[^a-z0-9._-]/gi, '-').replace(/\.[^.]+$/, '');
+  const name = options.uploadId ? `retry-${options.uploadId}${extension.toLowerCase()}` : `${crypto.randomUUID()}-${base}${extension.toLowerCase()}`;
   const target = path.join(__dirname, '..', 'uploads', name);
   const size = Number(file.size || 0) || (await fs.stat(file.path)).size;
   const existing = options.recovering ? await fs.stat(target).catch(() => null) : null;
   if (!existing || existing.size !== size) {
     await fs.mkdir(path.dirname(target), { recursive: true });
     const staging = `${target}-${crypto.randomUUID()}.part`;
-    try { await fs.copyFile(file.path, staging); await fs.rename(staging, target); }
+    try { if (file.buffer) await fs.writeFile(staging, file.buffer); else await fs.copyFile(file.path, staging); await fs.rename(staging, target); }
     finally { await fs.unlink(staging).catch(() => {}); }
   }
   return { url: `/uploads/${name}`, publicId: name, originalName: file.originalname, mimeType: file.mimetype, sizeBytes: file.size, provider: 'local' };

@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { request, resetDatabase, startTestEnvironment, stopTestEnvironment, getBaseUrl } = require('./helpers');
 const { createAdmin, createCustomer, createProduct } = require('./factories');
-const { createProvisionedSeller } = require('./accessFixtures');
+const { createUploadSeller: createProvisionedSeller } = require('./photoUploadFixtures');
 const background = require('../services/imageBackgroundService');
 test.before(startTestEnvironment); test.after(stopTestEnvironment); test.beforeEach(resetDatabase);
 

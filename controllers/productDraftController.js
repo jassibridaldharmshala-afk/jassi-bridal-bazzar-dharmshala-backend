@@ -125,7 +125,7 @@ exports.bulkUpload = async (req, res, next) => {
       const byId = new Map(drafts.map(draft => [String(draft._id), draft]));
       return { ...saved, data: { drafts: saved.data.drafts.map(draft => formatDraft(byId.get(String(draft._id)))) } };
     } });
-    if (isR2Configured() || isCloudinaryConfigured() || req.get?.('Idempotency-Key')) await cleanupTempFiles(req.files);
+    await cleanupTempFiles(req.files);
     res.status(201).json(result);
   } catch (error) {
     await cleanupTempFiles(req.files);

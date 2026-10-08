@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const fs = require('fs/promises');
+const { preparePhotoFile } = require('./photoCompressionService');
 
 function isCloudinaryConfigured() {
   return Boolean(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
@@ -11,6 +12,7 @@ async function uploadImage(file, options = {}) {
 
 async function uploadFile(file, resourceType = 'image', options = {}) {
   if (!isCloudinaryConfigured()) return null;
+  if (resourceType === 'image') file = await preparePhotoFile(file);
 
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
   const apiKey = process.env.CLOUDINARY_API_KEY;
@@ -37,9 +39,9 @@ async function uploadFile(file, resourceType = 'image', options = {}) {
     .update(`${Object.keys(parameters).sort().map(key => `${key}=${parameters[key]}`).join('&')}${apiSecret}`)
     .digest('hex');
 
-  const buffer = await fs.readFile(file.path);
+  const buffer = file.buffer || await fs.readFile(file.path);
   const form = new FormData();
-  form.append('file', new Blob([buffer], { type: file.mimetype }), file.originalname);
+  form.append('file', new Blob([buffer], { type: file.mimetype }), file.mimetype === 'image/webp' ? `${String(file.originalname).replace(/\.[^.]+$/, '')}.webp` : file.originalname);
   form.append('api_key', apiKey);
   Object.entries(parameters).forEach(([key, value]) => form.append(key, String(value)));
   form.append('signature', signature);
@@ -57,6 +59,8 @@ async function uploadFile(file, resourceType = 'image', options = {}) {
     url: data.secure_url,
     publicId: data.public_id,
     originalName: file.originalname,
+    mimeType: file.mimetype,
+    sizeBytes: buffer.length,
   };
 }
 

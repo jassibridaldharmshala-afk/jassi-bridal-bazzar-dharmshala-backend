@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { request, resetDatabase, startTestEnvironment, stopTestEnvironment, getBaseUrl } = require('./helpers');
 const { createAdmin, createCustomer } = require('./factories');
-const { createProvisionedSeller } = require('./accessFixtures');
+const { createUploadSeller: createProvisionedSeller } = require('./photoUploadFixtures');
 
 test.before(startTestEnvironment);
 test.after(stopTestEnvironment);
@@ -155,13 +155,16 @@ test('quick photo analysis sends the actual uploaded image, maps categories and 
     if (quotaExceeded) return { ok: false, status: 429, json: async () => ({ error: { message: 'Fixture quota exhausted' } }) };
     return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({ name: 'Rose Floral Saree', categoryName: 'Sarees', colors: ['Rose'], pattern: 'Floral', fabric: 'Silk', tags: ['Saree','Floral'], description: 'Rose floral saree.', price: 999, stock: 25, confidence: { overall: 0.9 } }) }] } }] }) };
   });
-  const categories = [{ _id: '0123456789abcdef01234567', name: 'Sarees' }];
-  for (const actor of [{ prefix: '/api/admin', token: admin.token }, { prefix: '/api/seller', token: seller.token, headers: { 'x-store-id': seller.store.id } }]) {
+  const Category = require('../models/Category');
+  const adminCategory = await Category.create({ name: 'Sarees', slug: 'photo-admin-sarees' });
+  const sellerCategory = await Category.create({ name: 'Sarees', slug: 'photo-seller-sarees', storeId: seller.store._id });
+  const categories = [{ _id: String(adminCategory._id), name: 'Sarees' }];
+  for (const actor of [{ prefix: '/api/admin', token: admin.token, categoryId: String(adminCategory._id) }, { prefix: '/api/seller', token: seller.token, headers: { 'x-store-id': seller.store.id }, categoryId: String(sellerCategory._id) }]) {
     assert.equal((await request(`${actor.prefix}/products/quick-analyze/status`, actor)).data.enabled, true);
     const result = await request(`${actor.prefix}/products/quick-analyze`, { ...actor, method: 'POST', body: { imageUrl: `/uploads/${marker}`, categories } });
     assert.equal(result.status, 200, JSON.stringify(result.data));
     assert.equal(result.data.suggestion.name, 'Rose Floral Saree');
-    assert.equal(result.data.suggestion.categoryId, categories[0]._id);
+    assert.equal(result.data.suggestion.categoryId, actor.categoryId);
     assert.equal(result.data.suggestion.sizingMode, 'free-size');
     assert.equal(result.data.suggestion.price, undefined); assert.equal(result.data.suggestion.stock, undefined);
   }

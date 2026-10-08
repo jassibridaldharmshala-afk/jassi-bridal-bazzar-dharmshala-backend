@@ -15,7 +15,7 @@ before(async () => {
 after(async () => { await stopTestEnvironment(); mock.restoreAll(); });
 beforeEach(resetDatabase);
 
-const image = Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AA/vuUAAA=', 'base64');
+const image = Buffer.from('UklGRjIAAABXRUJQVlA4ICYAAACQAQCdASoCAAIAAUAmJZACdLoAA5gA/vLrfrynxNt/V2J8KCwAAA==', 'base64');
 const groups = [
   { name: 'Lehenga', photoIndexes: [0, 1, 2, 3], coverIndex: 2 },
   { name: 'Jewellery', photoIndexes: [4, 5, 6, 7, 8, 9], coverIndex: 7 },
