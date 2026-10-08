@@ -2,6 +2,22 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeProductSizing, validateProductSizing, resolveProductSizingMode } = require('../services/productSizingService');
 
+test('empty size labels normalize to Free Size in all modes without mandatory measurements', () => {
+  for (const sizingMode of ['auto', 'sized', 'free-size']) {
+    const payload = normalizeProductSizing({ name: 'Bridal lehenga', sizingMode, sizes: [], stock: 4, sizeChart: { rows: [] } }, 'Lehengas');
+    assert.equal(payload.sizingMode, 'free-size'); assert.equal(payload.stock, 4);
+    assert.deepEqual(payload.sizes, []); assert.deepEqual(payload.sizeChart.rows, []);
+    assert.equal(validateProductSizing(payload, 'Lehengas'), '');
+  }
+});
+
+test('Free Size defaults keep colour-only variants and partial updates do not replace existing sizing', () => {
+  const variants = [{ size: '', color: 'Wine', stock: 2, price: 1200 }];
+  const payload = normalizeProductSizing({ name: 'Bridal jewellery', sizingMode: 'auto', sizes: [], variants });
+  assert.deepEqual(payload.variants, variants);
+  assert.deepEqual(normalizeProductSizing({ price: 1400 }), { price: 1400 });
+});
+
 test('saree sizing is removed at the API boundary', () => {
   const normalized = normalizeProductSizing({
     name: 'Silk Saree',

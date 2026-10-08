@@ -21,10 +21,13 @@ function normalizeProductSizing(payload = {}, categoryName = '') {
     && !Object.prototype.hasOwnProperty.call(payload, 'sizeChartProfile')) return next;
   const profile = inferProfile(next, categoryName);
   const mode = resolveMode(next, profile);
+  next.sizingMode = mode;
 
   if (mode === 'free-size') {
     next.sizes = [];
-    next.variants = [];
+    // Free-size colour/material variants still carry their own stock and price.
+    next.variants = Array.isArray(next.variants) && next.variants.every(variant => !variant?.size || /^free[ -]?size$/i.test(variant.size)) ? next.variants : [];
+    next.sizeChartProfile = 'free-size';
     next.sizeChart = { unit: 'in', columns: [], rows: [] };
     return next;
   }
@@ -87,8 +90,11 @@ function inferProfile(product = {}, categoryName = '') {
 }
 
 function resolveMode(product, profile = inferProfile(product)) {
-  if (product.sizingMode === 'sized') return 'sized';
   if (product.sizingMode === 'free-size') return 'free-size';
+  const hasSizes = uniqueStrings(product.sizes).some(size => !/^free[ -]?size$/i.test(size))
+    || (product.variants || []).some(variant => variant?.size && !/^free[ -]?size$/i.test(variant.size));
+  if (!hasSizes) return 'free-size';
+  if (product.sizingMode === 'sized') return 'sized';
   return profile === 'free-size' ? 'free-size' : 'sized';
 }
 

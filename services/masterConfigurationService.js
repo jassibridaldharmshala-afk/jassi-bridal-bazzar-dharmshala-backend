@@ -6,6 +6,8 @@ const mongoose = require('mongoose');
 const { ATTRIBUTE_TYPES, DEFAULT_STRUCTURE, INDUSTRY_IDS, getIndustryPreset } = require('../config/industryPresets');
 const { assertMasterOwner } = require('../config/masterOwner');
 const { ApiError } = require('../utils/apiError');
+const { resolveProductSizingMode } = require('./productSizingService');
+const sizeAttribute = key => /^(?:size|sizes|accessory_size|ring_size|bangle_size|size_range|measurements)$/i.test(key);
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const bad = (message) => { throw new ApiError('VALIDATION_ERROR', message); };
 const text = (value, max) => typeof value === 'string' ? value.trim().slice(0, max) : '';
@@ -383,7 +385,7 @@ async function applyProductStructure(payload, existing = {}) {
   for (const definition of definitions.sort((left, right) => left.sortOrder - right.sortOrder)) {
     const value = source[definition.key];
     const cleaned = validateAttributeValue(definition, value);
-    if (definition.required && !cleaned) bad(`Enter ${definition.label}`);
+    if (definition.required && !sizeAttribute(definition.key) && !cleaned) bad(`Enter ${definition.label}`);
     if (cleaned !== '') {
       attributeValues[definition.key] = cleaned;
       if (definition.showInSpecifications !== false || definition.showOnDetail !== false) specifications.push({
@@ -406,10 +408,12 @@ async function applyProductStructure(payload, existing = {}) {
   };
   if (structure.inventory?.trackExpiry && attributeValues.expiry_date) next.expiryDate = attributeValues.expiry_date;
   if (structure.inventory?.mode === 'batch' && attributeValues.batch_number) next.batchNumber = attributeValues.batch_number;
-  if (!structure.features.sizing) Object.assign(next, { sizingMode: 'free-size', sizeChartProfile: 'free-size', sizes: [], sizeChart: { unit: 'in', columns: [], rows: [] } });
+  const sizingBaseline = typeof existing.toObject === 'function' ? existing.toObject() : existing;
+  const garmentSizing = structure.features.sizing || resolveProductSizingMode({ ...sizingBaseline, ...payload }) === 'sized';
+  if (!garmentSizing) Object.assign(next, { sizingMode: 'free-size', sizeChartProfile: 'free-size', sizes: [], sizeChart: { unit: 'in', columns: [], rows: [] } });
   const inheritedVariantKeys = categoryChain.flatMap((item) => item.variantAttributes || []);
   const variantKeys = new Set(inheritedVariantKeys.length ? inheritedVariantKeys : (structure.variantConfig?.attributes || []));
-  if (Array.isArray(payload.variants) && payload.variants.length && !structure.features.sizing) {
+  if (Array.isArray(payload.variants) && payload.variants.length && !garmentSizing) {
     const seen = new Set();
     payload.variants.forEach((variant) => {
       const optionValues = variant?.optionValues instanceof Map ? Object.fromEntries(variant.optionValues) : { ...(variant?.optionValues || {}) };
