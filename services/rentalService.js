@@ -893,8 +893,15 @@ async function managementRows(store, kind, query = {}) {
   const model = kind === 'products' ? Product : kind === 'assets' ? M.Asset : M.Listing;
   if (kind === 'products' && query.productId) filter._id = A.id(query.productId);
   if (query.search) { const search = new RegExp(A.text(query.search, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); filter.$or = (kind === 'products' ? ['name', 'sku'] : kind === 'assets' ? ['code', 'label', 'poolKey'] : ['title', 'size', 'colour']).map(key => ({ [key]: search })); }
-  const select = kind === 'products' ? '_id name sku commerceMode variants' : '';
+  const select = kind === 'products' ? '_id name sku commerceMode variants images isActive publishAt' : '';
   const [rows, total] = await Promise.all([model.find(filter).select(select).sort(kind === 'assets' ? 'code' : kind === 'products' ? 'name' : 'title').skip((page - 1) * 30).limit(30).lean(), model.countDocuments(filter)]);
+  if (kind === 'products' && query.productId && rows.length) {
+    // Resolve the selected product only. Saved rental terms remain store-scoped
+    // and browsing a page does not read offers for every product.
+    const details = await Product.findOne({ ...filter, _id: rows[0]._id }).select('description shortDescription category fabric colors occasion highlights careInstructions attributeValues').lean();
+    Object.assign(rows[0], details);
+    rows[0].rentalOffers = await M.Listing.find({ storeId: store._id, productId: rows[0]._id }).sort({ createdAt: 1, _id: 1 }).limit(50).select('_id productId title active revision dailyRatePaise depositPaise advanceMode advancePercent advanceAmountPaise fitting variantId size colour requirements').lean();
+  }
   return { rows, total, page, pages: Math.ceil(total / 30) };
 }
 async function paymentMethods(store) {

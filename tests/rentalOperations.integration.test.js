@@ -135,3 +135,29 @@ test('fitting changes require a fresh quote and accepted fitting stays with the 
   const config = await S.readConfiguration(store); await S.saveConfiguration(store, { ...config, mode: 'SALE_ONLY' });
   await assert.rejects(() => S.saveListing(store, { ...listing, _id: undefined, active: true }), /Enable shop rental mode/);
 });
+
+test('rental setup resolves catalogue photos and saved prices only for the selected tenant product', async () => {
+  const Product = require('../models/Product');
+  await Product.updateOne({ _id: product._id }, { $set: { images: [{ url: '/uploads/bridal-front.jpg', primary: true }, { url: '/uploads/bridal-back.jpg' }], description: 'Owner catalogue description.', costPrice: 12345 } });
+  const foreign = await Store.create({ name: 'Foreign shop', slug: 'foreign-rental-setup', ownerId: admin.user._id, status: 'PUBLISHED' });
+  // Even a corrupt foreign listing pointing to this product must not appear.
+  await M.Listing.create({ storeId: foreign._id, productId: product._id, title: 'Foreign private rate', dailyRatePaise: 999999, depositPaise: 888888, requirements: listing.requirements });
+  const response = await request(`/api/admin/rentals/manage/products?productId=${product._id}&page=1`, { token: admin.token });
+  assert.equal(response.status, 200);
+  const selected = response.data.rows[0];
+  assert.equal(selected.images[0].url, '/uploads/bridal-front.jpg');
+  assert.equal(selected.description, 'Owner catalogue description.');
+  assert.equal(selected.costPrice, undefined);
+  assert.equal(selected.rentalOffers.length, 1);
+  assert.equal(selected.rentalOffers[0]._id, String(listing._id));
+  assert.equal(selected.rentalOffers[0].dailyRatePaise, listing.dailyRatePaise);
+  assert.equal(selected.rentalOffers[0].revision, listing.revision);
+  const details = await request(`/api/admin/rentals/setup/${listing._id}`, { token: admin.token });
+  assert.equal(details.status, 200);
+  assert.equal(details.data.product._id, String(product._id));
+  assert.equal(details.data.product.images.length, 2);
+  const denied = await request(`/api/admin/rentals/manage/products?productId=${product._id}`, { token: customer.token });
+  assert.equal(denied.status, 403);
+  const absent = await S.managementRows(foreign, 'products', { productId: String(product._id) });
+  assert.equal(absent.rows.length, 0);
+});

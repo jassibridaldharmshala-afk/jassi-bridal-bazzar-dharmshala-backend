@@ -46,7 +46,8 @@ async function detail(store, id) {
   const listing = await M.Listing.findOne({ _id: A.id(id), storeId: store._id }).lean();
   if (!listing) throw new ApiError('NOT_FOUND', 'Rental offer not found.');
   const configuration = await require('./rentalService').readConfiguration(store);
-  return { listing, ...(await readiness(store, listing)), shopEnabled: configuration.mode !== 'SALE_ONLY', onlinePayments: configuration.readiness.onlinePayments, acceptingOrders: configuration.readiness.acceptingOrders, contact: configuration.contact, policyRevision: configuration.revision };
+  const product = await Product.findOne({ _id: listing.productId, ...(store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }), isArchived: { $ne: true } }).select('_id name sku images commerceMode isActive publishAt').lean();
+  return { listing, product, ...(await readiness(store, listing)), shopEnabled: configuration.mode !== 'SALE_ONLY', onlinePayments: configuration.readiness.onlinePayments, acceptingOrders: configuration.readiness.acceptingOrders, contact: configuration.contact, policyRevision: configuration.revision };
 }
 async function registerPieces(store, id, input) {
   const operationId = A.operation(input.operationId), quantity = A.integer(input.quantity, 'actual quantity to register', 1, 100);
