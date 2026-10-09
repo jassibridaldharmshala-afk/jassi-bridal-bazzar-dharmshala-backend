@@ -4,6 +4,17 @@ const key = value => String(value || '').trim().toLowerCase().replace(/\s+/g, ' 
 function publishedRentalFilter(now = new Date()) {
   return { isActive: true, isArchived: { $ne: true }, commerceMode: { $in: ['RENTAL_ONLY', 'SALE_AND_RENTAL'] }, $or: [{ publishAt: null }, { publishAt: { $exists: false } }, { publishAt: { $lte: now } }] };
 }
+// The generated product pool is a link to this exact catalogue product, not a
+// second inventory silo. Custom Studio pools retain their component boundaries.
+function usesProductInventory(requirement, listing) {
+  return listing.matchingVersion === 2 && listing.requirements?.length === 1 &&
+    requirement.poolKey === `product-${listing.productId}` &&
+    String(requirement.productId || '') === String(listing.productId);
+}
+function assetFilter(requirement, listing) {
+  return usesProductInventory(requirement, listing)
+    ? { productId: listing.productId } : { poolKey: requirement.poolKey };
+}
 function matchesPiece(asset, requirement, listing) {
   const constraints = {
     productId: requirement.productId || (listing.requirements.length === 1 ? listing.productId : undefined),
@@ -39,4 +50,4 @@ async function binding(store, input, existing, session) {
   if (variant && ((size && key(size) !== key(variant.size)) || (colour && key(colour) !== key(variant.color)))) throw new ApiError('VALIDATION_ERROR', 'Piece size/colour must match its selected variant.');
   return { productId: product._id, variantId, size: size || variant?.size || '', colour: colour || variant?.color || '' };
 }
-module.exports = { publishedRentalFilter, matchesPiece, binding };
+module.exports = { publishedRentalFilter, matchesPiece, binding, usesProductInventory, assetFilter };

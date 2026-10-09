@@ -115,6 +115,7 @@ test('demo OTP mode issues and reveals the fixed code, and it verifies', async (
   assert.equal(sent.status, 200);
   assert.equal(sent.data.otpMode, 'demo');
   assert.equal(sent.data.demoOtp, '123456');
+  assert.equal(sent.data.otpLength, 6); assert.equal(sent.data.resendAfterSeconds, Number(process.env.OTP_RESEND_COOLDOWN_SECONDS || 60)); assert.equal(sent.data.expiresInSeconds, 300);
 
   const verified = await request('/api/auth/verify-otp', { method: 'POST', body: { phone: '9812345672', otp: '123456' } });
   assert.equal(verified.status, 200);

@@ -86,6 +86,10 @@ async function startServer() {
       app.locals.tenantIndexesReady = false;
       console.error(`Tenant index migration failed: ${error.message}`);
     }
+    try {
+      const linked = await require('./services/rentalProductLink').repairLegacyProductOffers();
+      if (linked.updated) console.log(`Linked ${linked.updated} saved product rental offer(s) to the storefront.`);
+    } catch (error) { console.error(`Product rental linking unavailable: ${error.message}`); }
     cleanupTasks.push(require('./services/deliveryService').startDeliveryWorker());
     cleanupTasks.push(require('./services/refundReconciliationService').startRefundReconciliationWorker());
     cleanupTasks.push(require('./services/reportScheduleService').startReportScheduleWorker());

@@ -85,3 +85,22 @@ test('the payment adapter distinguishes explicit rejection from unknown outcomes
   providerError = new Error('Response lost');
   await assert.rejects(() => gateway.createRazorpayOrder({ amountInPaise: 1000, receipt: 'adapter-test' }), e => e.razorpayDefinitiveRejection === false);
 });
+
+test('17 October is one shop-local use day; extra pickup/return dates and non-24-hour custody never become billed days', () => {
+  const policy = A.validatePolicy({ minimumLeadHours: 0 });
+  const input = { pickupAt: '2030-10-16T11:00:00+05:30', returnDueAt: '2030-10-18T17:00:00+05:30', useDates: ['2030-10-17'] };
+  const schedule = A.schedule(input, policy, new Date('2030-10-10T00:00:00Z'));
+  assert.equal(schedule.days, 1); assert.equal(schedule.custodyDays, 3); assert.equal(schedule.billingBasis, 'USE_DAYS');
+  assert.deepEqual(schedule.useDates, ['2030-10-17']);
+  const listing = { _id: 'l', productId: 'p', title: 'Lehenga', dailyRatePaise: 100000, depositPaise: 50000, cleaningFeePaise: 0, alterationFeePaise: 0 };
+  const q = A.quote([{ listing, quantity: 2 }], schedule, policy, 'STORE_PICKUP', 'FULL');
+  assert.equal(q.rentalPaise, 200000); assert.equal(q.depositPaise, 100000); assert.equal(q.totalPaise, 300000);
+  const sameDay = A.schedule({ ...input, pickupAt: '2030-10-17T10:00:00+05:30', returnDueAt: '2030-10-17T17:00:00+05:30' }, policy, new Date('2030-10-10'));
+  assert.equal(sameDay.days, 1);
+});
+test('separated use dates charge only selected calendar days and duplicates are rejected', () => {
+  const policy = A.validatePolicy({ minimumLeadHours: 0 }), now = new Date('2030-10-10');
+  const input = { pickupAt: '2030-10-16T10:00:00+05:30', returnDueAt: '2030-10-20T10:00:00+05:30', useDates: ['2030-10-19', '2030-10-17'] };
+  const result = A.schedule(input, policy, now); assert.equal(result.days, 2); assert.deepEqual(result.useDates, ['2030-10-17', '2030-10-19']);
+  assert.throws(() => A.schedule({ ...input, useDates: ['2030-10-17', '2030-10-17'] }, policy, now));
+});

@@ -20,6 +20,9 @@ const Listing = define('RentalListing', {
   // Each group is a component inventory pool. One asset from every group per set is required.
   requirements: [{ _id: false, poolKey: String, label: String, quantity: { type: Number, default: 1 }, productId: Schema.Types.ObjectId, variantId: String, size: String, colour: String }],
   matchingVersion: { type: Number, default: 1 },
+  // Product-created offers become visible once their real inventory is ready.
+  // Studio pauses remain explicit; legacy repair never reopens reviewed offers.
+  publicationOrigin: { type: String, enum: ['PRODUCT', 'STUDIO'], default: undefined },
   notes: { type: String, maxlength: 2000 }, revision: { type: Number, default: 0 },
   fitting: { type: Schema.Types.Mixed, default: undefined },
 }, [[{ storeId: 1, productId: 1, active: 1 }, {}]]);
@@ -33,7 +36,7 @@ const Asset = define('RentalAsset', {
   fitProfile: { type: Schema.Types.Mixed, default: undefined },
   status: { type: String, enum: ['READY', 'OUT', 'INSPECTION', 'CLEANING', 'REPAIR', 'LOST', 'RETIRED'], default: 'READY' },
   currentBookingId: Schema.Types.ObjectId, returnDueAt: Date, revision: { type: Number, default: 0 },
-}, [[{ storeId: 1, code: 1 }, { unique: true }], [{ storeId: 1, poolKey: 1, status: 1 }, {}], [{ storeId: 1, registrationBatchId: 1 }, {}]]);
+}, [[{ storeId: 1, code: 1 }, { unique: true }], [{ storeId: 1, poolKey: 1, status: 1 }, {}], [{ storeId: 1, productId: 1, status: 1 }, {}], [{ storeId: 1, registrationBatchId: 1 }, {}]]);
 const Reservation = define('RentalReservation', {
   assetId: { type: Schema.Types.ObjectId, ref: 'RentalAsset', required: true }, bookingId: Schema.Types.ObjectId,
   blockedFrom: { type: Date, required: true }, blockedUntil: { type: Date, required: true },

@@ -36,7 +36,7 @@ async function launchReadiness(store, session = null) {
   const methods = require('./paymentSettingsService').buildPaymentOptions(settings, { razorpayConfigured: gateway.isRazorpayConfigured() }).filter(m => m.provider === 'Razorpay' && m.enabled);
   return { acceptingOrders: settings?.acceptingOrders !== false, onlinePayments: methods.length > 0,
     pauseMessage: settings?.orderPauseMessage || 'This store has paused new orders. Contact the store for help.',
-    contact: { phone: settings?.contactPhone || store.supportPhone || '', whatsapp: settings?.whatsappNumber || store.whatsappNumber || '', email: settings?.contactEmail || store.supportEmail || '' } };
+    contact: { storeName: settings?.storeName || store.name || '', address: settings?.address || '', phone: settings?.contactPhone || store.supportPhone || '', whatsapp: settings?.whatsappNumber || store.whatsappNumber || '', email: settings?.contactEmail || store.supportEmail || '' } };
 }
 async function readConfiguration(store) {
   const config = await M.Configuration.findOne({ storeId: storeId(store) }).lean();
@@ -106,7 +106,9 @@ async function saveListing(store, input, actorId) {
   if (cleaned.some(r => !/^[a-z0-9_-]{2,80}$/.test(r.poolKey) || !r.label) || new Set(cleaned.map(r => r.poolKey)).size !== cleaned.length) fail('Use unique lowercase inventory pool keys and labels.', 'VALIDATION_ERROR');
   if (typeof input.active !== 'boolean') fail('Choose whether the listing is active.', 'VALIDATION_ERROR');
   return transaction(store, async (session, configuration) => {
-    if (input.active && configuration.mode === 'SALE_ONLY') fail('Enable shop rental mode before activating an offer.', 'VALIDATION_ERROR');
+    const current = input._id ? await M.Listing.findOne({ _id: A.id(input._id), storeId: store._id }).session(session) : null;
+    const keepProductEnabled = current?.publicationOrigin === 'PRODUCT' && current.active && input.active;
+    if (input.active && !keepProductEnabled && configuration.mode === 'SALE_ONLY') fail('Enable shop rental mode before activating an offer.', 'VALIDATION_ERROR');
     const product = await Product.findOne(productFilter(store, input.productId)).session(session);
     if (!product || product.isArchived) fail('Choose an existing product in this store.', 'NOT_FOUND');
     if (input.active && product.commerceMode === 'SALE_ONLY') fail('Enable rental availability on this product before activating its rental listing.', 'VALIDATION_ERROR');
@@ -135,15 +137,15 @@ async function saveListing(store, input, actorId) {
     if (values.variantId && !product.variants.some(v => String(v._id) === values.variantId && v.isActive !== false)) fail('Choose an active product variant.', 'VALIDATION_ERROR');
     let listing;
     if (input._id) {
-      listing = await M.Listing.findOne({ _id: A.id(input._id), storeId: store._id }).session(session);
+      listing = current;
       if (!listing) fail('Rental listing not found.', 'NOT_FOUND');
       if (input.revision !== listing.revision) fail('Rental listing changed. Reload first.');
       if (String(listing.productId) !== String(product._id)) fail('An existing listing cannot be moved to another product.', 'VALIDATION_ERROR');
-      Object.assign(listing, values); listing.revision += 1;
-    } else listing = new M.Listing({ storeId: store._id, ...values });
+      Object.assign(listing, values); listing.publicationOrigin ||= 'STUDIO'; listing.revision += 1;
+    } else listing = new M.Listing({ storeId: store._id, publicationOrigin: 'STUDIO', ...values });
     // Only configured inventory may be advertised as a new active offer. This is
     // inside the availability fence, so simultaneous piece edits cannot race it.
-    if (listing.active) {
+    if (listing.active && !keepProductEnabled) {
       const readiness = await require('./rentalSetupService').readiness(store, listing.toObject(), session);
       if (!readiness.ready) fail('Complete rental setup before activation: ' + readiness.checks.filter(c => !c.ready).map(c => c.label).join('; '), 'VALIDATION_ERROR');
     }
@@ -223,14 +225,14 @@ async function quoteInternal(store, input, session, { existing = false, counter 
   const used = new Set();
   for (const line of lines) for (const requirement of line.listing.requirements) {
     const required = requirement.quantity * line.quantity;
-    const assets = await M.Asset.find({ storeId: store._id, poolKey: requirement.poolKey, $or: [{ status: 'READY' }, { status: 'OUT', returnDueAt: { $gt: new Date() } }, ...(ignoreBooking ? [{ status: 'OUT', currentBookingId: ignoreBooking }] : [])] }).sort('code').limit(1000).session(session || null).lean();
+    const assets = await M.Asset.find({ storeId: store._id, ...inventoryRules.assetFilter(requirement, line.listing), $or: [{ status: 'READY' }, { status: 'OUT', returnDueAt: { $gt: new Date() } }, ...(ignoreBooking ? [{ status: 'OUT', currentBookingId: ignoreBooking }] : [])] }).sort('code').limit(1000).session(session || null).lean();
     const conflicting = await M.Reservation.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, active: true, ...(ignoreBooking ? { bookingId: { $ne: ignoreBooking } } : {}), blockedFrom: { $lt: dates.blockedUntil }, blockedUntil: { $gt: dates.blockedFrom }, $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] }).session(session || null).select('assetId').lean();
     const excluded = new Set(conflicting.map(r => String(r.assetId)));
     const overdueWork = await M.Task.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, status: { $in: require('./rentalStudioService').openTasks }, dueAt: { $lte: new Date() } }).session(session || null).select('assetId').lean();
     for (const task of overdueWork) excluded.add(String(task.assetId));
     const available = assets.filter(a => !a.saleConversion && inventoryRules.matchesPiece(a, requirement, line.listing) && !excluded.has(String(a._id)) && !used.has(String(a._id)));
     if (available.length < required) fail(`${line.listing.title}: ${requirement.label} is unavailable for these dates.`, 'OUT_OF_STOCK');
-    for (const asset of available.slice(0, required)) { used.add(String(asset._id)); allocations.push({ listingId: line.listing._id, assetId: asset._id, code: asset.code, label: asset.label, binding: { productId: requirement.productId || (line.listing.requirements.length === 1 ? line.listing.productId : undefined), variantId: requirement.variantId || (line.listing.requirements.length === 1 ? line.listing.variantId : ''), size: requirement.size || (line.listing.requirements.length === 1 ? line.listing.size : ''), colour: requirement.colour || (line.listing.requirements.length === 1 ? line.listing.colour : '') } }); }
+    for (const asset of available.slice(0, required)) { used.add(String(asset._id)); allocations.push({ listingId: line.listing._id, assetId: asset._id, code: asset.code, label: asset.label, binding: { inventoryScope: inventoryRules.usesProductInventory(requirement, line.listing) ? 'PRODUCT' : 'POOL', poolKey: requirement.poolKey, productId: requirement.productId || (line.listing.requirements.length === 1 ? line.listing.productId : undefined), variantId: requirement.variantId || (line.listing.requirements.length === 1 ? line.listing.variantId : ''), size: requirement.size || (line.listing.requirements.length === 1 ? line.listing.size : ''), colour: requirement.colour || (line.listing.requirements.length === 1 ? line.listing.colour : '') } }); }
   }
   await assertSlotCapacity(store, dates, policy, session, ignoreBooking);
   if (!(await bindingsEligible(store, allocations, session))) fail('An allocated component product or variant is no longer published/available.', 'OUT_OF_STOCK');
@@ -592,8 +594,9 @@ async function replacePiece(store, bookingId, input, actorId) {
     const allocation = b.allocations.find(a => String(a.assetId) === A.id(input.assetId));
     if (!allocation) fail('Allocated piece not found.');
     const old = await M.Asset.findOne({ _id: allocation.assetId, storeId: store._id }).session(session).lean();
-    const replacement = await M.Asset.findOne({ _id: A.id(input.replacementId), storeId: store._id, poolKey: old.poolKey, $or: [{ status: 'READY', currentBookingId: null }, { status: 'OUT', returnDueAt: { $gt: new Date() } }] }).session(session).lean();
-    if (!replacement || replacement.saleConversion || (allocation.binding && !inventoryRules.matchesPiece(replacement, allocation.binding, { matchingVersion: 2, requirements: [allocation.binding] })) || b.allocations.some(a => String(a.assetId) === String(replacement._id))) fail('Choose an available, different piece matching the accepted product/variant/size/colour from the same component pool.', 'OUT_OF_STOCK');
+    const replacementInventory = allocation.binding?.inventoryScope === 'PRODUCT' ? { productId: allocation.binding.productId } : { poolKey: old.poolKey };
+    const replacement = await M.Asset.findOne({ _id: A.id(input.replacementId), storeId: store._id, ...replacementInventory, $or: [{ status: 'READY', currentBookingId: null }, { status: 'OUT', returnDueAt: { $gt: new Date() } }] }).session(session).lean();
+    if (!replacement || replacement.saleConversion || (allocation.binding && !inventoryRules.matchesPiece(replacement, allocation.binding, { matchingVersion: 2, requirements: [allocation.binding] })) || b.allocations.some(a => String(a.assetId) === String(replacement._id))) fail('Choose an available, different piece matching the accepted product/variant/size/colour from the accepted inventory.', 'OUT_OF_STOCK');
     if (await M.Reservation.exists({ storeId: store._id, assetId: replacement._id, active: true, blockedFrom: { $lt: b.schedule.blockedUntil }, blockedUntil: { $gt: b.schedule.blockedFrom }, $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] }).session(session)) fail('The replacement is reserved for these dates.', 'OUT_OF_STOCK');
     await M.Reservation.updateMany({ storeId: store._id, bookingId: b._id, assetId: old._id }, { $set: { active: false } }, { session });
     await M.Reservation.create([{ storeId: store._id, bookingId: b._id, assetId: replacement._id, blockedFrom: b.schedule.blockedFrom, blockedUntil: b.schedule.blockedUntil, expiresAt: b.status === 'HELD' ? b.expiresAt : null }], { session });

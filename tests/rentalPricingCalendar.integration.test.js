@@ -57,11 +57,11 @@ test('stale or foreign rental pricing rolls back the product update', async () =
   assert.equal((await Product.findById(product._id)).price, 1000);
   assert.equal((await M.Listing.findById(listing._id)).dailyRatePaise, 100000);
 });
-test('a new mixed product saves two prices and creates an inactive offer without fake rental pieces', async () => {
+test('a new mixed product links its two prices without inventing rental pieces or advertising an unready offer', async () => {
   const result = await request('/api/admin/products', { method: 'POST', token: admin.token, body: { name: 'New bridal jewellery', sku: op(), category: String(product.category), price: 5000, originalPrice: 6000, stock: 3, sizes: [], sizingMode: 'free-size', commerceMode: 'SALE_AND_RENTAL', images: [{ url: 'https://example.test/bridal.webp', primary: true }], rentalPricing: { dailyRatePaise: 75000, depositPaise: 100000, advanceMode: 'STORE' } } });
   assert.equal(result.status, 201, JSON.stringify(result.data));
   const offer = await M.Listing.findOne({ productId: result.data._id });
-  assert.equal(result.data.price, 5000); assert.equal(offer.dailyRatePaise, 75000); assert.equal(offer.active, false);
+  assert.equal(result.data.price, 5000); assert.equal(offer.dailyRatePaise, 75000); assert.equal(offer.active, true); assert.equal(offer.publicationOrigin, 'PRODUCT');
   assert.equal(await M.Asset.countDocuments({ productId: result.data._id }), 0);
 });
 test('draft publication retains mixed mode and its separate rental pricing', async () => {
@@ -72,7 +72,7 @@ test('draft publication retains mixed mode and its separate rental pricing', asy
   const saved = result.data.data.products[0];
   assert.equal(saved.price, 4000); assert.equal(saved.commerceMode, 'SALE_AND_RENTAL');
   const offer = await M.Listing.findOne({ productId: saved._id });
-  assert.equal(offer.dailyRatePaise, 50000); assert.equal(offer.advancePercent, 25); assert.equal(offer.active, false);
+  assert.equal(offer.dailyRatePaise, 50000); assert.equal(offer.advancePercent, 25); assert.equal(offer.active, true); assert.equal(offer.publicationOrigin, 'PRODUCT');
 });
 test('incomplete rental prices can be drafted but cannot be published', async () => {
   const draft = await request('/api/admin/product-drafts', { method: 'POST', token: admin.token, body: { name: 'Incomplete rental look', category: String(product.category), price: 4000, originalPrice: 5000, stock: 0, commerceMode: 'RENTAL_ONLY', images: [{ url: 'https://example.test/look.webp' }] } });

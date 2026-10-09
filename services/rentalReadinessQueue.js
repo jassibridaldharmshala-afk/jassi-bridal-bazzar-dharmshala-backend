@@ -14,7 +14,7 @@ async function queue(store, query = {}) {
   const shopReasons = [
     configuration.mode === 'SALE_ONLY' && { code: 'RENTALS_DISABLED', message: 'Enable rentals in shop policies.' },
     configuration.readiness.acceptingOrders === false && { code: 'ORDERS_PAUSED', message: configuration.readiness.pauseMessage || 'New bookings are paused.' },
-    !configuration.readiness.onlinePayments && { code: 'PAYMENT_UNAVAILABLE', message: 'Configure an enabled online payment method.' },
+    !configuration.readiness.onlinePayments && !configuration.policy.paymentPlans?.includes('PICKUP') && { code: 'PAYMENT_UNAVAILABLE', message: 'Configure an enabled online payment method.' },
   ].filter(Boolean);
   const rows = []; let after = query.after || '', scanned = 0, more = true;
   const search = String(query.search || '').trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

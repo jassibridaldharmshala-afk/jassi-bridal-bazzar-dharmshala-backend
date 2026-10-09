@@ -70,7 +70,9 @@ async function alternatives(store, listingId, query, { counter = false } = {}) {
 async function slots(store, query, { counter = false } = {}) {
   const config = await S().readConfiguration(store);
   if (config.mode === 'SALE_ONLY') fail('This shop has not enabled rentals.', 'CHECKOUT_RESTRICTED');
-  if (!config.policy.dateFirstEnabled) fail('Date-first shopping is disabled.');
+  // Checkout still needs shop times when date-first catalogue browsing is off.
+  const kind = query.kind || 'pickup';
+  if (!['pickup', 'return'].includes(kind)) fail('Choose pickup or return times.');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(query.date || '') || !Number.isFinite(Date.parse(query.date + 'T12:00Z')) || new Date(query.date + 'T12:00Z').toISOString().slice(0, 10) !== query.date) fail('Choose a valid shop date.');
   const p = config.policy, [h, m] = p.pickupStart.split(':').map(Number), [eh, em] = p.pickupEnd.split(':').map(Number), rows = [];
   for (let minute = h * 60 + m; minute < eh * 60 + em; minute += p.slotMinutes) {
@@ -81,7 +83,7 @@ async function slots(store, query, { counter = false } = {}) {
       $and: [{ $or: [{ 'schedule.pickupAt': at }, { 'schedule.returnDueAt': at },
         { 'trial.at': { $lte: at }, 'trial.until': { $gt: at }, 'trial.status': { $in: ['SCHEDULED', 'ATTENDED'] } },
         { 'trial.at': at, 'trial.status': { $exists: false } }] }, { $or: [{ status: { $ne: 'HELD' } }, { expiresAt: { $gt: new Date() } }] }] });
-    rows.push({ at, time, capacityLeft: Math.max(0, p.slotCapacity - count), available: count < p.slotCapacity && +at >= Date.now() + (counter ? -15 * 60000 : p.minimumLeadHours * A.HOUR) && +at <= Date.now() + p.maximumAdvanceDays * A.DAY });
+    rows.push({ at, time, capacityLeft: Math.max(0, p.slotCapacity - count), available: count < p.slotCapacity && +at >= Date.now() + (counter ? -15 * 60000 : kind === 'return' ? 0 : p.minimumLeadHours * A.HOUR) && +at <= Date.now() + (p.maximumAdvanceDays + (kind === 'return' ? p.maximumDays + 2 : 0)) * A.DAY });
   }
   return { timezone: p.timezone, rows, note: 'Shop capacity only; outfit availability is checked separately.' };
 }

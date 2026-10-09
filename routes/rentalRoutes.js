@@ -2,8 +2,8 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const C = require('../controllers/rentalController');
 const { protect } = require('../middleware/authMiddleware');
-const limiter = rateLimit({ windowMs: 60000, limit: 60, standardHeaders: 'draft-7', legacyHeaders: false });
-const proofLimit = rateLimit({ windowMs: 60000, limit: 10, standardHeaders: true, legacyHeaders: false });
+const limiter = rateLimit({ windowMs: 60000, limit: 60, standardHeaders: 'draft-7', legacyHeaders: false, message: { success: false, code: 'RATE_LIMITED', message: 'Too many rental requests. Please wait a minute, then retry.' } });
+const proofLimit = rateLimit({ windowMs: 60000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMITED', message: 'Too many photo uploads. Please wait a minute, then retry.' } });
 const proofUpload = require('../middleware/photoUploadMiddleware').createPhotoUpload({ files: 4, fields: 6,
   maxFileBytes: require('../services/photoCompressionService').PHOTO_PRIVATE_MAX_BYTES }).array('images', 4);
 function customerRouter() {

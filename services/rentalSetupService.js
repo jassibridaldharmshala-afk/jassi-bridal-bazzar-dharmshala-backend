@@ -12,7 +12,8 @@ async function batchReadiness(store, listings, session = null) {
   const scope = store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id };
   const ids = [...new Set(listings.flatMap(listing => [listing.productId, ...(listing.requirements || []).map(r => r.productId)]).filter(Boolean).map(String))];
   const productQuery = Product.find({ $and: [scope, { _id: { $in: ids } }, I.publishedRentalFilter()] }).select('_id variants').session(session).lean();
-  const assetQuery = M.Asset.find({ storeId: store._id, poolKey: { $in: [...new Set(listings.flatMap(listing => (listing.requirements || []).map(r => r.poolKey)))] }, status: { $nin: ['LOST', 'RETIRED'] }, saleConversion: null }).select('productId variantId size colour poolKey status').session(session).lean();
+  const inventory = listings.flatMap(listing => (listing.requirements || []).map(r => I.assetFilter(r, listing)));
+  const assetQuery = M.Asset.find({ storeId: store._id, $or: inventory.length ? inventory : [{ _id: null }], status: { $nin: ['LOST', 'RETIRED'] }, saleConversion: null }).select('productId variantId size colour poolKey status').session(session).lean();
   // MongoDB operations on the same transaction/session must be sequential.
   const [products, assets] = session ? [await productQuery, await assetQuery] : await Promise.all([productQuery, assetQuery]);
   const now = new Date();
@@ -23,11 +24,16 @@ async function batchReadiness(store, listings, session = null) {
     const p = byId.get(String(productId));
     return !!p && (!variantId || p.variants?.some(v => String(v._id) === String(variantId) && v.isActive !== false));
   };
-  const pools = new Map();
-  for (const asset of assets) { if (!pools.has(asset.poolKey)) pools.set(asset.poolKey, []); pools.get(asset.poolKey).push(asset); }
+  const pools = new Map(), productPieces = new Map();
+  for (const asset of assets) {
+    if (!pools.has(asset.poolKey)) pools.set(asset.poolKey, []); pools.get(asset.poolKey).push(asset);
+    const productId = String(asset.productId || '');
+    if (!productPieces.has(productId)) productPieces.set(productId, []); productPieces.get(productId).push(asset);
+  }
   return new Map(listings.map(listing => {
   const components = (listing.requirements || []).map(r => {
-    const matching = (pools.get(r.poolKey) || []).filter(a => I.matchesPiece(a, r, listing));
+    const candidates = I.usesProductInventory(r, listing) ? productPieces.get(String(listing.productId)) : pools.get(r.poolKey);
+    const matching = (candidates || []).filter(a => I.matchesPiece(a, r, listing));
     return { ...r, _pieceStates: matching.map(a => ({ id: String(a._id), status: a.status, reserved: reservedIds.has(String(a._id)) })), productReady: productReady(r.productId || listing.productId, r.variantId || (listing.requirements.length === 1 ? listing.variantId : '')), configured: matching.length, readyNow: matching.filter(a => a.status === 'READY').length, reserved: matching.filter(a => a.status !== 'OUT' && reservedIds.has(String(a._id))).length, booked: matching.filter(a => a.status === 'OUT').length, cleaning: matching.filter(a => ['CLEANING', 'REPAIR'].includes(a.status)).length, required: r.quantity };
   });
   const checks = [

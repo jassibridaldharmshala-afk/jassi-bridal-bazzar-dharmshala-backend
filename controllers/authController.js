@@ -477,9 +477,11 @@ function otpDeliveryError(delivery) {
 }
 
 function otpResponse(delivery) {
-  if (delivery?.owner) return { otpMode: 'production' };
-  if (!isDemoOtpMode() || !delivery?.demoOtp) return { otpMode: getOtpMode() };
-  return { otpMode: 'demo', demoOtp: delivery.demoOtp, devOtp: delivery.demoOtp };
+  const seconds = Number(process.env.OTP_RESEND_COOLDOWN_SECONDS || 60), expiry = Number(process.env.OTP_EXPIRY_MINUTES || 5) * 60;
+  const metadata = { otpLength: isDemoOtpMode() && delivery?.demoOtp ? String(delivery.demoOtp).length : 6, resendAfterSeconds: Number.isFinite(seconds) ? Math.max(0, seconds) : 60, expiresInSeconds: Number.isFinite(expiry) ? Math.max(60, expiry) : 300 };
+  if (delivery?.owner) return { ...metadata, otpMode: 'production' };
+  if (!isDemoOtpMode() || !delivery?.demoOtp) return { ...metadata, otpMode: getOtpMode() };
+  return { ...metadata, otpMode: 'demo', demoOtp: delivery.demoOtp, devOtp: delivery.demoOtp };
 }
 
 function allowOtpRequest(phone, ip) {

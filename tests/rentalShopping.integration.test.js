@@ -101,3 +101,45 @@ test('staff rescheduling re-quotes explicit use days, retains free transit days,
   assert.equal(updated.schedule.days, 2); assert.equal(updated.schedule.custodyDays, 3); assert.deepEqual(updated.schedule.useDates, next.useDates);
   assert.equal(updated.quote.rentalPaise, 300000); assert.equal(updated.quote.paymentPlan, 'PICKUP'); assert.equal(updated.quote.dueNowPaise, 0);
 });
+
+test('checkout shop slots work without date-first browsing and expose only bookable shop times', async () => {
+  const config = await S.readConfiguration(store);
+  assert.equal(config.policy.dateFirstEnabled, false);
+  const day = plan().pickupAt.slice(0, 10);
+  const response = await request('/api/rentals/slots?date=' + day + '&kind=pickup');
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  assert.equal(response.data.rows.length, 8);
+  assert(response.data.rows.every(row => row.time >= '10:00' && row.time < '18:00'));
+  assert(response.data.rows.some(row => row.available));
+  const closed = await S.saveConfiguration(store, { ...config, policy: { ...config.policy, closedDates: [day] } });
+  const empty = await request('/api/rentals/slots?date=' + day);
+  assert.equal(empty.status, 200); assert.equal(empty.data.rows.length, 0);
+  await S.saveConfiguration(store, { ...closed, mode: 'SALE_ONLY' });
+  assert.equal((await request('/api/rentals/slots?date=' + day)).status, 403);
+});
+
+test('return slots allow a legitimate return beyond the advance booking cutoff and invalid slot types fail', async () => {
+  const config = await S.readConfiguration(store);
+  await S.saveConfiguration(store, { ...config, policy: { ...config.policy, maximumAdvanceDays: 2 } });
+  const date = A.localKey(new Date(Date.now() + 3 * A.DAY), config.policy.timezone);
+  const pickup = await request('/api/rentals/slots?date=' + date + '&kind=pickup');
+  const due = await request('/api/rentals/slots?date=' + date + '&kind=return');
+  assert.equal(pickup.status, 200); assert(pickup.data.rows.every(row => !row.available));
+  assert.equal(due.status, 200); assert(due.data.rows.some(row => row.available));
+  assert.equal((await request('/api/rentals/slots?date=' + date + '&kind=other')).status, 400);
+});
+
+test('rental request limits return a clear JSON retry message and create no booking', async () => {
+  let blocked;
+  for (let index = 0; index < 61; index += 1) {
+    const result = await request('/api/rentals/configuration');
+    if (result.status === 429) { blocked = result; break; }
+    assert.equal(result.status, 200, JSON.stringify(result.data));
+  }
+  assert(blocked, 'Existing 60-per-minute rental limit must remain enforced.');
+  assert.equal(blocked.data.success, false);
+  assert.equal(blocked.data.code, 'RATE_LIMITED');
+  assert.match(blocked.data.message, /wait a minute, then retry/i);
+  assert(Number(blocked.headers.get('retry-after')) > 0);
+  assert.equal(await M.Booking.countDocuments(), 0);
+});
