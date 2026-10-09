@@ -62,6 +62,18 @@ test('admin may approve full or partial cancellation refund without altering sec
   const denied = await request('/api/admin/rentals/bookings/' + b._id + '/operation', { method: 'POST', token: customer.token, body: { action: 'CANCEL', retainedRentalPaise: 0 } }); assert([403,404].includes(denied.status));
 });
 
+test('store-fault cancellation cannot retain rent and the accepted full refund releases the pieces', async () => {
+  const b = await S.hold(store, await reviewed(plan('FULL')), customer.user);
+  const paid = await S.recordCollection(store, String(b._id), { operationId: op(), revision: b.revision, method: 'CASH', reference: op(), amountPaise: 350000 }, admin.user._id);
+  await assert.rejects(() => S.mutateBooking(store, String(b._id), { action: 'CANCEL', ownerFault: true, retainedRentalPaise: 25000, note: 'Store cannot fulfil', operationId: op(), revision: paid.revision }, admin.user._id), /full refund/i);
+  const unchanged = await M.Booking.findById(b._id).lean();
+  assert.equal(unchanged.status, 'CONFIRMED'); assert.equal(unchanged.revision, paid.revision);
+  assert.equal(await M.Reservation.countDocuments({ bookingId: b._id, active: true }), 1);
+  const cancelled = await S.mutateBooking(store, String(b._id), { action: 'CANCEL', ownerFault: true, retainedRentalPaise: 0, note: 'Store cannot fulfil; refund in full', operationId: op(), revision: paid.revision }, admin.user._id);
+  assert.equal(cancelled.status, 'CANCELLED'); assert.equal(cancelled.adjustedRentalPaise, 0); assert.equal(cancelled.financial.refundablePaise, 350000);
+  assert.equal(await M.Reservation.countDocuments({ bookingId: b._id, active: true }), 0);
+});
+
 test('rental price filters and sorting use rental rates before counting and paging', async () => {
   const expensive = await S.saveListing(store, { ...listing, _id: undefined, dailyRatePaise: 250000, title: 'Premium outfit' });
   assert.deepEqual((await S.catalogue(store, { sort: 'priceHighLow' })).rows.map(row => String(row._id)), [String(expensive._id), String(listing._id)]);

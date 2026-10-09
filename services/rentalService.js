@@ -490,6 +490,7 @@ async function mutateBooking(store, bookingId, input, actorId) {
       await assertNoOpenCourier(b, session);
       if (!['HELD', 'CONFIRMED', 'PREPARING', 'READY'].includes(b.status)) fail('Cancellation is not available after handover.');
       if (!input.note) fail('Record the cancellation reason.', 'VALIDATION_ERROR');
+      if (input.ownerFault === true && input.retainedRentalPaise !== undefined && Number(input.retainedRentalPaise) !== 0) fail('A store-fault cancellation requires a full refund; retained rent must be zero.', 'VALIDATION_ERROR');
       b.adjustedRentalPaise = input.retainedRentalPaise !== undefined ? A.integer(input.retainedRentalPaise, 'retained rental charge', 0, A.paidRent(b)) : input.ownerFault === true ? 0 : b.cancellationChargesPaise + Math.min(A.cancellationRent(b), Math.max(0, A.paidRent(b) - b.cancellationChargesPaise));
       b.status = 'CANCELLED'; b.cancelledReason = A.text(input.note, 1000);
       for (const request of b.requests.filter(row => row.type === 'CANCEL' && row.status === 'PENDING')) { request.status = 'RESOLVED'; request.resolvedAt = new Date(); request.responseNote = b.cancelledReason; }
