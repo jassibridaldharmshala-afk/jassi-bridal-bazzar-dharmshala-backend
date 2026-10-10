@@ -350,10 +350,11 @@ exports.myOrders = asyncHandler(async (req, res) => {
   }
   const paginated = wantsPagination(req.query);
   const { page, limit, skip } = readPagination(req.query, { defaultLimit: paginated ? 12 : 200, maxLimit: 200 });
-  const orders = await Order.find(filter).populate('shipment').sort('-createdAt').skip(skip).limit(limit);
+  const scopedFilter = andFilter(filter, req.tenantFilter);
+  const orders = await Order.find(scopedFilter).populate('shipment').sort('-createdAt').skip(skip).limit(limit);
   await Promise.all(orders.map((order) => syncPaidOnlineOrderStatus(order)));
   const publicOrders = orders.map(publicCustomerOrder);
-  if (paginated) return res.json(buildPaginatedResponse(publicOrders, { page, limit, total: await Order.countDocuments(filter) }));
+  if (paginated) return res.json(buildPaginatedResponse(publicOrders, { page, limit, total: await Order.countDocuments(scopedFilter) }));
   res.json(publicOrders);
 });
 

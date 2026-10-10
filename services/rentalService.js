@@ -201,7 +201,37 @@ async function blockAsset(store, input) {
     return row.toObject();
   });
 }
-async function quoteInternal(store, input, session, { existing = false, counter = false, policy: oldPolicy, ignoreBooking } = {}) {
+async function assertNoCustomerDuplicate(store, lines, dates, customerUserId, session) {
+  if (!mongoose.isValidObjectId(customerUserId)) return;
+  const productIds = lines.map(line => String(line.listing.productId));
+  const listingIds = lines.map(line => String(line.listing._id));
+  const bookings = await M.Booking.find({ storeId: store._id, userId: customerUserId,
+    status: { $in: ['HELD', 'CONFIRMED', 'PREPARING', 'READY', 'OUT'] },
+    $or: [{ status: { $ne: 'HELD' } }, { expiresAt: { $gt: new Date() } }],
+    'schedule.pickupAt': { $lt: dates.returnDueAt }, 'schedule.returnDueAt': { $gt: dates.pickupAt },
+    'quote.items': { $elemMatch: { $or: [{ productId: { $in: productIds } }, { listingId: { $in: listingIds } }] } },
+  }).select('_id number status quote.items allocations.listingId allocations.binding').sort('createdAt _id').session(session || null).lean();
+  if (!bookings.length) return;
+  // Two offers can refer to the same outfit. Different fitting/variant
+  // selections remain independent, while an alternate offer cannot bypass
+  // the duplicate check. Retired offers still match their exact listing ID.
+  const previousListings = await M.Listing.find({ storeId: store._id,
+    _id: { $in: [...new Set(bookings.flatMap(b => b.quote.items.map(i => i.listingId)))] },
+  }).select('_id productId variantId size colour').session(session || null).lean();
+  const byId = new Map(previousListings.map(listing => [String(listing._id), listing]));
+  const identity = listing => JSON.stringify([String(listing.productId), ...['variantId', 'size', 'colour'].map(key => {
+    const value = String(listing[key] || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    return key === 'size' && /^(free[ -]?size|one[ -]?size)$/.test(value) ? '' : value;
+  })]);
+  for (const booking of bookings) for (const item of booking.quote.items) {
+    const binding = booking.allocations?.find(a => String(a.listingId) === String(item.listingId) && String(a.binding?.productId) === String(item.productId))?.binding;
+    const previous = binding ? { ...binding, productId: item.productId } : byId.get(String(item.listingId)) || { productId: item.productId };
+    const line = lines.find(row => String(row.listing._id) === String(item.listingId) || (previous && identity(row.listing) === identity(previous)));
+    if (line) throw new ApiError('RENTAL_ALREADY_BOOKED', `You've already booked ${line.listing.title} for these dates. Open your existing booking to view payment, pickup or cancellation options.`,
+      { details: { bookingId: String(booking._id), bookingNumber: booking.number, bookingStatus: booking.status } });
+  }
+}
+async function quoteInternal(store, input, session, { existing = false, counter = false, policy: oldPolicy, ignoreBooking, customerUserId } = {}) {
   const configuration = await enabled(store, session);
   const policy = A.validatePolicy(oldPolicy || { ...configuration.policy, advancePercent: configuration.policy.advancePercent || A.DEFAULT_POLICY.advancePercent }, { existing: !!oldPolicy });
   const dates = A.schedule(input, policy, new Date(), { existing, allowImmediate: counter });
@@ -219,6 +249,7 @@ async function quoteInternal(store, input, session, { existing = false, counter 
     if (listing.variantId && !product.variants?.some(v => String(v._id) === listing.variantId && v.isActive !== false)) fail('The selected rental variant is unavailable.', 'OUT_OF_STOCK');
     lines.push({ listing: { ...listing, image: product.images?.[0] }, quantity: A.integer(item.quantity, 'quantity', 1, 10) });
   }
+  if (!counter && !existing) await assertNoCustomerDuplicate(store, lines, dates, customerUserId, session);
   const price = A.quote(lines, dates, policy, input.deliveryMode || 'STORE_PICKUP', input.paymentPlan || (policy.paymentPlans || ['ADVANCE'])[0]);
   if (price.paymentPlan === 'PICKUP' || dates.billingBasis === 'USE_DAYS') dates.balanceDueAt = dates.pickupAt;
   const allocations = [];
@@ -226,12 +257,16 @@ async function quoteInternal(store, input, session, { existing = false, counter 
   for (const line of lines) for (const requirement of line.listing.requirements) {
     const required = requirement.quantity * line.quantity;
     const assets = await M.Asset.find({ storeId: store._id, ...inventoryRules.assetFilter(requirement, line.listing), $or: [{ status: 'READY' }, { status: 'OUT', returnDueAt: { $gt: new Date() } }, ...(ignoreBooking ? [{ status: 'OUT', currentBookingId: ignoreBooking }] : [])] }).sort('code').limit(1000).session(session || null).lean();
-    const conflicting = await M.Reservation.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, active: true, ...(ignoreBooking ? { bookingId: { $ne: ignoreBooking } } : {}), blockedFrom: { $lt: dates.blockedUntil }, blockedUntil: { $gt: dates.blockedFrom }, $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] }).session(session || null).select('assetId').lean();
+    const conflicting = await M.Reservation.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, active: true, ...(ignoreBooking ? { bookingId: { $ne: ignoreBooking } } : {}), blockedFrom: { $lt: dates.blockedUntil }, blockedUntil: { $gt: dates.blockedFrom }, $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] }).session(session || null).select('assetId kind').lean();
     const excluded = new Set(conflicting.map(r => String(r.assetId)));
     const overdueWork = await M.Task.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, status: { $in: require('./rentalStudioService').openTasks }, dueAt: { $lte: new Date() } }).session(session || null).select('assetId').lean();
     for (const task of overdueWork) excluded.add(String(task.assetId));
     const available = assets.filter(a => !a.saleConversion && inventoryRules.matchesPiece(a, requirement, line.listing) && !excluded.has(String(a._id)) && !used.has(String(a._id)));
-    if (available.length < required) fail(`${line.listing.title}: ${requirement.label} is unavailable for these dates.`, 'OUT_OF_STOCK');
+    if (available.length < required) {
+      const booked = new Set(conflicting.filter(r => r.kind === 'BOOKING').map(r => String(r.assetId)));
+      const otherwiseAvailable = assets.filter(a => !a.saleConversion && inventoryRules.matchesPiece(a, requirement, line.listing) && !used.has(String(a._id)) && booked.has(String(a._id)));
+      fail(otherwiseAvailable.length ? `${line.listing.title} is already booked for these dates and the requested quantity is unavailable. Choose other dates or another rental item. Pickup, return and cleaning time are included in the availability check.` : `${line.listing.title}: ${requirement.label} is unavailable for these dates. Choose other dates or another rental item.`, 'OUT_OF_STOCK');
+    }
     for (const asset of available.slice(0, required)) { used.add(String(asset._id)); allocations.push({ listingId: line.listing._id, assetId: asset._id, code: asset.code, label: asset.label, binding: { inventoryScope: inventoryRules.usesProductInventory(requirement, line.listing) ? 'PRODUCT' : 'POOL', poolKey: requirement.poolKey, productId: requirement.productId || (line.listing.requirements.length === 1 ? line.listing.productId : undefined), variantId: requirement.variantId || (line.listing.requirements.length === 1 ? line.listing.variantId : ''), size: requirement.size || (line.listing.requirements.length === 1 ? line.listing.size : ''), colour: requirement.colour || (line.listing.requirements.length === 1 ? line.listing.colour : '') } }); }
   }
   await assertSlotCapacity(store, dates, policy, session, ignoreBooking);
@@ -245,9 +280,9 @@ async function assertSlotCapacity(store, dates, policy, session, ignoreBooking) 
     if (count >= policy.slotCapacity) fail('That pickup/return slot is full. Choose another time.', 'OUT_OF_STOCK');
   }
 }
-async function publicQuote(store, input, { counter = false } = {}) {
+async function publicQuote(store, input, { counter = false, customerUserId } = {}) {
   assertStoreCanAcceptOrders(store, { rental: true });
-  const data = await quoteInternal(store, input, null, { counter });
+  const data = await quoteInternal(store, input, null, { counter, customerUserId });
   return { quote: data.quote, quoteFingerprint: A.quoteFingerprint(store._id, data), schedule: data.schedule, terms: data.policy.terms, policyRevision: data.policyRevision, timezone: data.policy.timezone, policySummary: { graceHours: data.policy.graceHours, lateFeePerDayPaise: data.policy.lateFeePerDayPaise, cancellationRules: data.policy.cancellationRules, preparationHours: data.policy.preparationHours, cleaningHours: data.policy.cleaningHours, advanceMode: data.policy.advanceMode, advancePercent: data.policy.advancePercent, advanceAmountPaise: data.policy.advanceAmountPaise, depositTiming: data.policy.depositTiming, noShowGraceHours: data.policy.noShowGraceHours, noShowRetainPercent: data.policy.noShowRetainPercent, earlyReturnPolicy: data.policy.earlyReturnPolicy, requireConditionPhotos: data.policy.requireConditionPhotos, requireCustomerAcknowledgement: data.policy.requireCustomerAcknowledgement } };
 }
 async function enqueue(booking, event, session, token, { audiences = ['OWNER', 'CUSTOMER'] } = {}) {
@@ -308,7 +343,7 @@ async function hold(store, input, user, { counter = false } = {}) {
     const launch = await launchReadiness(store, session);
     if (!launch.acceptingOrders) fail(launch.pauseMessage, 'CHECKOUT_RESTRICTED');
     if (!counter && input.paymentPlan !== 'PICKUP' && !launch.onlinePayments) fail('Online rental payments are unavailable. Contact the store; no booking or payment has been created.', 'CHECKOUT_RESTRICTED');
-    const data = await quoteInternal(store, input, session, { counter });
+    const data = await quoteInternal(store, input, session, { counter, customerUserId: counter ? undefined : user._id });
     if (input.policyRevision !== data.policyRevision) fail('Rental terms changed. Review the quote and accept again.', 'RENTAL_QUOTE_CHANGED');
     if (input.quoteFingerprint !== A.quoteFingerprint(store._id, data)) fail('The rental price or listing changed. Review the latest quote and accept it again before reserving.', 'RENTAL_QUOTE_CHANGED');
     await usage.assertMonthlyCapacity(store, { session, platform, lock: true });

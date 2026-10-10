@@ -79,7 +79,7 @@ exports.catalogue = asyncHandler(async (req, res) => send(res, await service.cat
 exports.managementRows = asyncHandler(async (req, res) => { const data = await service.managementRows(req.store, req.params.kind, req.query); if (req.params.kind === 'assets') data.rows = assetFields(req, data.rows); send(res, data); });
 exports.paymentMethods = asyncHandler(async (req, res) => send(res, await service.paymentMethods(req.store)));
 exports.report = asyncHandler(async (req, res) => { if (!hasRentalReports(req)) throw new ApiError('PLAN_FEATURE_REQUIRED', 'Rental reports are not included in the current plan.'); const data = await service.report(req.store, req.query); if (!can(req, 'inventory.cost.read')) data.assets = data.assets.map(({ costPaise, ...asset }) => asset); send(res, data); });
-exports.quote = asyncHandler(async (req, res) => send(res, await service.publicQuote(req.store, req.body, { counter: req.rentalStaff === true })));
+exports.quote = asyncHandler(async (req, res) => send(res, await service.publicQuote(req.store, req.body, { counter: req.rentalStaff === true, customerUserId: req.rentalStaff ? undefined : req.user?._id })));
 exports.hold = asyncHandler(async (req, res) => send(res, service.present(await service.hold(req.store, req.body, req.user), { staff: false })));
 exports.counterHold = write('COUNTER_BOOKING', req => service.hold(req.store, req.body, req.user, { counter: true }));
 exports.list = asyncHandler(async (req, res) => send(res, bookingPrivacy(req, await service.listBookings(req.store, req.query, req.rentalStaff ? undefined : req.user._id))));

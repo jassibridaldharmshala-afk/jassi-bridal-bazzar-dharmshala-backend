@@ -18,7 +18,9 @@ function customerRouter() {
   router.get('/products/:id', C.listings);
   router.get('/calendar/:id', C.calendar);
   router.post('/calendar', C.calendarSet);
-  router.post('/quote', C.quote);
+  // Guests can plan dates. A supplied session must be verified before we
+  // look up that customer's existing bookings.
+  router.post('/quote', (req, res, next) => req.headers.authorization ? protect(req, res, next) : next(), C.quote);
   router.use(protect);
   router.get('/waitlist', C.waitlist);
   router.get('/waitlist/:id', C.waitlistDetail);
