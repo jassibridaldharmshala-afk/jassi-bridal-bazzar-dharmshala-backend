@@ -32,6 +32,22 @@ async function accepted(input = plan()) {
 const quote = (input, who) => H.request('/api/rentals/quote', { method: 'POST', body: input, token: who?.token });
 const reserve = (input, who = customer) => H.request('/api/rentals/bookings', { method: 'POST', body: input, token: who.token });
 
+test('rental booking uses entered identity and keeps optional email blank rather than copying the account', async () => {
+  await require('../models/User').updateOne({ _id: customer.user._id }, { $set: { name: 'Jassi User 0001', email: 'phone+9000000001@samira.local' } });
+  const input = await accepted();
+  const result = await reserve({ ...input, customer: { name: 'Priya Sharma', email: '', phone: customer.user.phone } });
+  assert.equal(result.status, 200, JSON.stringify(result.data));
+  assert.equal(result.data.customer.name, 'Priya Sharma'); assert.equal(result.data.customer.email, '');
+  const stored = await M.Booking.findById(result.data._id).lean();
+  assert.equal(stored.customer.name, 'Priya Sharma'); assert.equal(stored.customer.email, '');
+});
+
+test('rental checkout cannot silently use a generated account name when no name was supplied', async () => {
+  await require('../models/User').updateOne({ _id: customer.user._id }, { $set: { name: 'Jassi User 0001', email: 'phone+9000000001@samira.local' } });
+  const result = await reserve(await accepted());
+  assert.equal(result.status, 400, JSON.stringify(result.data)); assert.equal(await M.Booking.countDocuments(), 0);
+});
+
 test('owner sees the existing booking before quoting or reserving, even when a second piece is free; exact retries recover', async () => {
   await addPiece(); const input = await accepted(), first = await reserve(input);
   assert.equal(first.status, 200);

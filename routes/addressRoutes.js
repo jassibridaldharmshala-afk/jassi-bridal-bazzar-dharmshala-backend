@@ -3,6 +3,7 @@ const User = require('../models/User');
 const { protect } = require('../middleware/authMiddleware');
 const { asyncHandler } = require('../middleware/validate');
 const { normalizeIndianMobile } = require('../utils/phoneUtils');
+const { customerName, customerEmail } = require('../utils/customerIdentity');
 
 router.use(protect);
 
@@ -50,7 +51,8 @@ function normalizeAddress(data = {}, isDefault = false) {
   const text = (value) => typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
   const mobile = normalizeIndianMobile(data.mobile || data.phone);
   return {
-    fullName: text(data.fullName),
+    fullName: customerName(text(data.fullName)),
+    email: customerEmail(data.email),
     mobile,
     phone: mobile,
     alternateMobile: normalizeIndianMobile(data.alternateMobile),
@@ -69,6 +71,7 @@ function normalizeAddress(data = {}, isDefault = false) {
 function validateAddress(data) {
   data = normalizeAddress(data);
   if (!data.fullName) return 'Full name is required';
+  if (data.email && (data.email.length > 254 || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(data.email))) return 'Enter a valid email address, or leave it blank';
   const mobile = data.mobile || data.phone;
   if (!/^[6-9]\d{9}$/.test(String(mobile || ''))) return 'Valid 10-digit mobile number is required';
   if (!/^\d{6}$/.test(String(data.pincode || ''))) return 'Valid 6-digit pincode is required';

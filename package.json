@@ -1,7 +1,7 @@
 {
-  "name": "jassi-general-store-backend",
+  "name": "jassi-bridal-bazar-dharmshala-backend",
   "version": "1.0.0",
-  "description": "Jassi General Store backend API",
+  "description": "Jassi Bridal Bazar Dharmshala backend API",
   "main": "server.js",
   "engines": {
     "node": "20.x"

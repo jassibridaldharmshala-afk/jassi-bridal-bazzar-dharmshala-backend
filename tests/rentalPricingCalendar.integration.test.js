@@ -57,15 +57,16 @@ test('stale or foreign rental pricing rolls back the product update', async () =
   assert.equal((await Product.findById(product._id)).price, 1000);
   assert.equal((await M.Listing.findById(listing._id)).dailyRatePaise, 100000);
 });
-test('a new mixed product links its two prices without inventing rental pieces or advertising an unready offer', async () => {
-  const result = await request('/api/admin/products', { method: 'POST', token: admin.token, body: { name: 'New bridal jewellery', sku: op(), category: String(product.category), price: 5000, originalPrice: 6000, stock: 3, sizes: [], sizingMode: 'free-size', commerceMode: 'SALE_AND_RENTAL', images: [{ url: 'https://example.test/bridal.webp', primary: true }], rentalPricing: { dailyRatePaise: 75000, depositPaise: 100000, advanceMode: 'STORE' } } });
+test('a new mixed product saves its declared rental pieces separately from sale stock', async () => {
+  const result = await request('/api/admin/products', { method: 'POST', token: admin.token, body: { name: 'New bridal jewellery', sku: op(), category: String(product.category), price: 5000, originalPrice: 6000, stock: 3, sizes: [], sizingMode: 'free-size', commerceMode: 'SALE_AND_RENTAL', images: [{ url: 'https://example.test/bridal.webp', primary: true }], rentalPricing: { dailyRatePaise: 75000, depositPaise: 100000, advanceMode: 'STORE', inventory: [{ componentIndex: 0, quantity: 2 }] } } });
   assert.equal(result.status, 201, JSON.stringify(result.data));
   const offer = await M.Listing.findOne({ productId: result.data._id });
   assert.equal(result.data.price, 5000); assert.equal(offer.dailyRatePaise, 75000); assert.equal(offer.active, true); assert.equal(offer.publicationOrigin, 'PRODUCT');
-  assert.equal(await M.Asset.countDocuments({ productId: result.data._id }), 0);
+  assert.equal(await M.Asset.countDocuments({ productId: result.data._id }), 2);
+  assert.equal(result.data.rentalOffers[0].ready, true);
 });
 test('draft publication retains mixed mode and its separate rental pricing', async () => {
-  const draft = await request('/api/admin/product-drafts', { method: 'POST', token: admin.token, body: { name: 'Draft bridal gown', sku: op(), category: String(product.category), price: 4000, originalPrice: 5000, stock: 0, sizingMode: 'free-size', commerceMode: 'SALE_AND_RENTAL', images: [{ url: 'https://example.test/gown.webp' }], rentalPricing: { dailyRatePaise: 50000, depositPaise: 200000, advanceMode: 'PERCENT', advancePercent: 25 } } });
+  const draft = await request('/api/admin/product-drafts', { method: 'POST', token: admin.token, body: { name: 'Draft bridal gown', sku: op(), category: String(product.category), price: 4000, originalPrice: 5000, stock: 0, sizingMode: 'free-size', commerceMode: 'SALE_AND_RENTAL', images: [{ url: 'https://example.test/gown.webp' }], rentalPricing: { dailyRatePaise: 50000, depositPaise: 200000, advanceMode: 'PERCENT', advancePercent: 25, inventory: [{ componentIndex: 0, quantity: 1 }] } } });
   assert.equal(draft.status, 201, JSON.stringify(draft.data));
   const result = await request('/api/admin/product-drafts/publish-selected', { method: 'POST', token: admin.token, body: { ids: [draft.data.data.id || draft.data.data._id] } });
   assert.equal(result.status, 200, JSON.stringify(result.data));
@@ -88,6 +89,7 @@ test('calendar accounts for held pieces and preparation/cleaning buffers without
   assert.equal(result.status, 200, JSON.stringify(result.data));
   const day = dates().pickupAt.slice(0, 10);
   assert.equal(result.data.rows.find(row => row.date === day).status, 'UNAVAILABLE');
+  assert.deepEqual(result.data.rows.find(row => row.date === day).availability, [{ listingId: String(listing._id), title: listing.title, requestedQuantity: 1, totalQuantity: 1, availableQuantity: 0, bookedQuantity: 1, blockedQuantity: 0 }]);
   const afterReturn = A.localKey(new Date(+booking.schedule.returnDueAt + A.DAY), booking.policy.timezone);
   if (afterReturn.startsWith(result.data.month)) assert.equal(result.data.rows.find(row => row.date === afterReturn).status, 'UNAVAILABLE');
   const safe = JSON.stringify(result.data);
@@ -99,8 +101,42 @@ test('another matching piece remains available, but requesting two sets conflict
   await S.saveAsset(store, { productId: String(product._id), poolKey: 'bridal-piece', code: 'BRIDAL-02', label: 'Second outfit' });
   const one = await calendar();
   assert.equal(one.rows.find(row => row.date === dates().pickupAt.slice(0, 10)).status, 'AVAILABLE');
+  assert.equal(one.rows.find(row => row.date === dates().pickupAt.slice(0, 10)).availability[0].bookedQuantity, 1);
+  assert.equal(one.rows.find(row => row.date === dates().pickupAt.slice(0, 10)).availability[0].availableQuantity, 1);
   const two = await C.calendar(store, listing._id, { month: dates().pickupAt.slice(0, 7), days: 2, quantity: 2 });
   assert.equal(two.rows.find(row => row.date === dates().pickupAt.slice(0, 10)).status, 'UNAVAILABLE');
+});
+
+test('authenticated calendar identifies only the viewer own booking even with spare capacity, and ignores forged customer IDs', async () => {
+  const booking = await hold();
+  await S.saveAsset(store, { productId: String(product._id), poolKey: 'bridal-piece', code: 'BRIDAL-02', label: 'Second outfit' });
+  const path = `/api/rentals/calendar/${listing._id}?month=${dates().pickupAt.slice(0, 7)}&days=2`;
+  const own = await request(path, { token: customer.token });
+  assert.equal(own.status, 200, JSON.stringify(own.data));
+  const row = own.data.rows.find(row => row.date === dates().pickupAt.slice(0, 10));
+  assert.equal(row.status, 'ALREADY_BOOKED'); assert.equal(row.ownBooking.id, String(booking._id));
+  assert.equal(row.ownBooking.status, 'HELD'); assert.equal(row.availability[0].availableQuantity, 1);
+  const stranger = await createCustomer();
+  for (const token of [undefined, stranger.token]) {
+    const response = await request(path + '&customerUserId=' + customer.user._id, { token });
+    assert.equal(response.status, 200);
+    assert.equal(response.data.rows.find(row => row.date === dates().pickupAt.slice(0, 10)).status, 'AVAILABLE');
+    for (const secret of [String(booking._id), booking.number, customer.user.phone, 'ownBooking']) assert.equal(JSON.stringify(response.data).includes(secret), false);
+  }
+  assert.equal((await request(path, { token: 'invalid-token' })).status, 401);
+});
+
+test('calendar counts cleaning and maintenance separately and returns released inventory after cancellation', async () => {
+  const booking = await hold();
+  const spare = await S.saveAsset(store, { productId: String(product._id), poolKey: 'bridal-piece', code: 'BRIDAL-02', label: 'Second outfit' });
+  await S.changeAsset(store, spare._id, { operationId: op(), revision: spare.revision, status: 'CLEANING' });
+  const before = await calendar(), day = dates().pickupAt.slice(0, 10);
+  assert.deepEqual(before.rows.find(row => row.date === day).availability[0], { listingId: String(listing._id), title: listing.title, requestedQuantity: 1, totalQuantity: 2, availableQuantity: 0, bookedQuantity: 1, blockedQuantity: 1 });
+  await S.mutateBooking(store, booking._id, { action: 'CANCEL', operationId: op(), revision: booking.revision, note: 'Cancelled by agreement' });
+  const after = await request(`/api/rentals/calendar/${listing._id}?month=${dates().pickupAt.slice(0, 7)}&days=2`, { token: customer.token });
+  const released = after.data.rows.find(row => row.date === day);
+  assert.equal(released.status, 'AVAILABLE'); assert.equal(released.ownBooking, undefined);
+  assert.equal(released.availability[0].availableQuantity, 1); assert.equal(released.availability[0].bookedQuantity, 0);
 });
 test('expired holds release calendar availability; calendar remains scoped to its store', async () => {
   const booking = await hold();

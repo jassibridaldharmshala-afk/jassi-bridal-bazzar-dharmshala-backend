@@ -46,8 +46,8 @@ exports.recoverHold = asyncHandler(async (req, res) => {
   if (!booking) throw new ApiError('NOT_FOUND', 'This attempt has no saved booking yet. Retry the same reservation attempt.');
   send(res, service.present(booking, { staff: false }));
 });
-exports.calendar = asyncHandler(async (req, res) => send(res, await require('../services/rentalCalendarService').calendar(req.store, req.params.id, req.query)));
-exports.calendarSet = asyncHandler(async (req, res) => send(res, await require('../services/rentalCalendarService').calendarSet(req.store, req.body, { counter: req.rentalStaff === true })));
+exports.calendar = asyncHandler(async (req, res) => send(res, await require('../services/rentalCalendarService').calendar(req.store, req.params.id, req.query, { customerUserId: req.user?._id })));
+exports.calendarSet = asyncHandler(async (req, res) => send(res, await require('../services/rentalCalendarService').calendarSet(req.store, req.body, { counter: req.rentalStaff === true, customerUserId: req.rentalStaff ? undefined : req.user?._id })));
 exports.readinessQueue = asyncHandler(async (req, res) => send(res, await require('../services/rentalReadinessQueue').queue(req.store, req.query)));
 exports.setup = asyncHandler(async (req, res) => send(res, await require('../services/rentalSetupService').detail(req.store, req.params.id)));
 exports.registerPieces = write('PIECES_REGISTERED', req => require('../services/rentalSetupService').registerPieces(req.store, req.params.id, req.body));

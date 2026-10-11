@@ -51,7 +51,7 @@ test('manually entered sizes survive create and partial updates when automatic s
 
 test('sale + rental drafts publish without size labels and preserve both prices and the deposit', async () => {
   const { token, headers, body } = await fixture();
-  const rentalPricing = { dailyRatePaise: 50000, depositPaise: 100000, advanceMode: 'PERCENT', advancePercent: 25 };
+  const rentalPricing = { dailyRatePaise: 50000, depositPaise: 100000, advanceMode: 'PERCENT', advancePercent: 25, inventory: [{ componentIndex: 0, quantity: 1 }] };
   const created = await request('/api/seller/product-drafts', { method: 'POST', token, headers, body: { ...body, commerceMode: 'SALE_AND_RENTAL', rentalPricing } });
   assert.equal(created.status, 201, JSON.stringify(created.data));
   const id = created.data.data._id || created.data.data.id;

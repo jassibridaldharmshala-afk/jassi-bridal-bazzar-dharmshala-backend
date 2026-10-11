@@ -37,7 +37,7 @@ const productSchema = new mongoose.Schema({
   name: { type: String, required: true },
   sourceDraftId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProductDraft', unique: true, sparse: true, default: undefined },
   slug: { type: String, required: true },
-  brand: { type: String, default: 'Jassi General Store' },
+  brand: { type: String, default: 'Jassi Bridal Bazar Dharmshala' },
   shortDescription: String,
   industry: { type: String, default: 'fashion', index: true },
   commerceMode: { type: String, enum: ['SALE_ONLY', 'RENTAL_ONLY', 'SALE_AND_RENTAL'], default: 'SALE_ONLY' },

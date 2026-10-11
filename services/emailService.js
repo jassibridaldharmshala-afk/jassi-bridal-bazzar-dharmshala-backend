@@ -41,11 +41,11 @@ async function sendViaBrevo(email, otp) {
     body: JSON.stringify({
       sender: {
         email: senderEmail,
-        name: process.env.BREVO_SENDER_NAME || 'Jassi General Store',
+        name: process.env.BREVO_SENDER_NAME || 'Jassi Bridal Bazar Dharmshala',
       },
       to: [{ email }],
-      subject: 'Verify your Jassi General Store email',
-      htmlContent: `<div style="font-family:Arial,sans-serif;color:#1f2a44"><h2>Jassi General Store</h2><p>Your email verification OTP is:</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${otp}</p><p>This OTP expires in ${Number(process.env.OTP_EXPIRY_MINUTES || 5)} minutes.</p></div>`,
+      subject: 'Verify your Jassi Bridal Bazar Dharmshala email',
+      htmlContent: `<div style="font-family:Arial,sans-serif;color:#1f2a44"><h2>Jassi Bridal Bazar Dharmshala</h2><p>Your email verification OTP is:</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${otp}</p><p>This OTP expires in ${Number(process.env.OTP_EXPIRY_MINUTES || 5)} minutes.</p></div>`,
     }),
   });
 
@@ -76,7 +76,7 @@ async function sendTransactionalEmail({ to, subject, htmlContent, attachments = 
     method: 'POST',
     headers: { accept: 'application/json', 'api-key': apiKey, 'content-type': 'application/json' },
     body: JSON.stringify({
-      sender: { email: senderEmail, name: process.env.BREVO_SENDER_NAME || 'Jassi General Store' },
+      sender: { email: senderEmail, name: process.env.BREVO_SENDER_NAME || 'Jassi Bridal Bazar Dharmshala' },
       to: [{ email: to }], subject, htmlContent,
       attachment: attachments.map((item) => ({ name: item.name, content: Buffer.from(item.content).toString('base64') })),
     }),

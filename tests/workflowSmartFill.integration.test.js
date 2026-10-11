@@ -48,7 +48,7 @@ test('ordinary previews are deterministic, scoped to the brand and do not persis
   for (const workflow of ['category', 'banner', 'campaign', 'coupon', 'website', 'shipment', 'store']) {
     const response = await preview(admin.token, { workflow, notes: 'Category: Earrings\nTitle: Festive edit\nBrand: Nishaya\nLuxury jewellery\n10% above ₹1000' });
     assert.equal(response.status, 200, workflow + ': ' + JSON.stringify(response.data));
-    assert.equal(response.data.mode, 'algorithm'); assert.doesNotMatch(JSON.stringify(response.data), /Jassi General Store/);
+    assert.equal(response.data.mode, 'algorithm'); assert.doesNotMatch(JSON.stringify(response.data), /Jassi Bridal Bazar Dharmshala/);
   }
   assert.deepEqual(await Product.findById(product._id).lean(), before);
   assert.deepEqual(await Promise.all([Category.countDocuments(), Settings.countDocuments(), Order.countDocuments()]), counts);

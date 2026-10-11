@@ -59,3 +59,13 @@ test('address validation and persistence failures return through the API error h
   const failed = await call('post', '/', user, address);
   assert.match(failed.error.message, /Database unavailable/);
 });
+
+test('entered email is saved and editable while generated identity and invalid email are rejected', async () => {
+  const user = makeUser();
+  assert.equal((await call('post', '/', user, { ...address, email: ' PRIYA@EXAMPLE.COM ' })).statusCode, 201);
+  assert.equal(user.addresses[0].email, 'priya@example.com');
+  await call('put', '/:addressId', user, { ...address, email: '' }, String(user.addresses[0]._id));
+  assert.equal(user.addresses[0].email, '');
+  assert.equal((await call('post', '/', user, { ...address, fullName: 'Jassi User 3210' })).statusCode, 400);
+  assert.equal((await call('post', '/', user, { ...address, email: 'invalid' })).statusCode, 400);
+});

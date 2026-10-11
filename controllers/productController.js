@@ -114,6 +114,7 @@ exports.getProducts = asyncHandler(async (req, res) => {
   };
   const query = catalogQuery(req, isAdminRequest ? archiveFilter : publicVisibility);
   if (!isAdminRequest) addQueryClause(query, await require('../services/catalogCommerceService').publicFilter(req));
+  const rentalRates = !isAdminRequest ? req.rentalCatalogRates : null;
   if (isAdminRequest && ['out', 'low', 'in'].includes(req.query.stock)) addQueryClause(query, { commerceMode: { $ne: 'RENTAL_ONLY' } });
   const dynamicFilterKeys = Object.keys(req.query || {}).filter((key) => key.startsWith('attr_'));
   const catalogConfiguration = req.query.search || dynamicFilterKeys.length || req.query.includeFacets === 'true'
@@ -176,17 +177,24 @@ exports.getProducts = asyncHandler(async (req, res) => {
     if (values.length) query.occasion = { $in: values };
   }
   if (req.query.minPrice || req.query.maxPrice) {
-    query.price = {};
     const minimum = Number(req.query.minPrice); const maximum = Number(req.query.maxPrice);
-    if (req.query.minPrice && Number.isFinite(minimum) && minimum >= 0) query.price.$gte = minimum;
-    if (req.query.maxPrice && Number.isFinite(maximum) && maximum >= 0) query.price.$lte = maximum;
-    if (!Object.keys(query.price).length) delete query.price;
+    if (rentalRates) {
+      addQueryClause(query, { _id: { $in: [...rentalRates.values()].filter(row =>
+        (!req.query.minPrice || !Number.isFinite(minimum) || minimum < 0 || row.dailyRatePaise >= minimum * 100) &&
+        (!req.query.maxPrice || !Number.isFinite(maximum) || maximum < 0 || row.dailyRatePaise <= maximum * 100)
+      ).map(row => row.productId) } });
+    } else {
+      query.price = {};
+      if (req.query.minPrice && Number.isFinite(minimum) && minimum >= 0) query.price.$gte = minimum;
+      if (req.query.maxPrice && Number.isFinite(maximum) && maximum >= 0) query.price.$lte = maximum;
+      if (!Object.keys(query.price).length) delete query.price;
+    }
   }
-  if (req.query.discount && Number.isFinite(Number(req.query.discount))) query.discountPercentage = { $gte: Math.max(0, Number(req.query.discount)) };
+  if (!rentalRates && req.query.discount && Number.isFinite(Number(req.query.discount))) query.discountPercentage = { $gte: Math.max(0, Number(req.query.discount)) };
   if (req.query.rating && Number.isFinite(Number(req.query.rating))) query.rating = { $gte: Math.max(0, Math.min(5, Number(req.query.rating))) };
-  if (req.query.stock === 'in') query.stock = { $gt: 0 };
-  if (req.query.stock === 'out') query.stock = 0;
-  if (req.query.stock === 'low') {
+  if (!rentalRates && req.query.stock === 'in') query.stock = { $gt: 0 };
+  if (!rentalRates && req.query.stock === 'out') query.stock = 0;
+  if (!rentalRates && req.query.stock === 'low') {
     query.$expr = { $and: [{ $gt: [availableStock, 0] }, stockWarning] };
   }
   if (req.query.status === 'active') query.isActive = true;
@@ -223,7 +231,7 @@ exports.getProducts = asyncHandler(async (req, res) => {
     const { page, limit, skip } = readPagination(req.query, { defaultLimit: 24, maxLimit: 100 });
     const includeFacets = !isAdminRequest && req.query.includeFacets === 'true';
     const [items, total, facets] = await Promise.all([
-      Product.find(query).populate('category').sort(sort).skip(skip).limit(limit),
+      findCatalogProducts(query, sort, req, { skip, limit }),
       Product.countDocuments(query),
       includeFacets ? buildPublicCatalogFacets(req, catalogConfiguration, configuredAttributes) : null,
     ]);
@@ -233,11 +241,31 @@ exports.getProducts = asyncHandler(async (req, res) => {
     return res.json(response);
   }
   // Legacy public arrays are bounded. Authorized management/export behavior stays explicit.
-  let finder = Product.find(query).populate('category').sort(sort);
-  if (!isAdminRequest) finder = finder.limit(readPagination(req.query, { defaultLimit: 24, maxLimit: 100 }).limit).maxTimeMS(5000);
-  const products = await finder;
+  const products = await findCatalogProducts(query, sort, req, isAdminRequest ? {} : { limit: readPagination(req.query, { defaultLimit: 24, maxLimit: 100 }).limit });
   res.json(await require('../services/rentalProductPreview').enrich(products.map((product) => normalizeProductResponse(product, req)), req));
 });
+
+async function findCatalogProducts(query, sort, req, { skip = 0, limit } = {}) {
+  const rates = req.rentalCatalogRates;
+  if (rates && ['priceLowHigh', 'priceHighLow'].includes(req.query.sort)) {
+    const direction = req.query.sort === 'priceHighLow' ? -1 : 1;
+    const ids = [...rates.values()].sort((a, b) => direction * (a.dailyRatePaise - b.dailyRatePaise || String(a.productId).localeCompare(String(b.productId)))).map(row => row.productId);
+    // Cast the same tenant/category query used by find() before aggregation.
+    const match = Product.find(query).cast(Product);
+    const rows = await Product.aggregate([
+      { $match: match },
+      { $set: { _rentalOrder: { $indexOfArray: [{ $literal: ids }, '$_id'] } } },
+      { $sort: { _rentalOrder: 1 } },
+      ...(skip ? [{ $skip: skip }] : []),
+      ...(limit ? [{ $limit: limit }] : []),
+      { $unset: '_rentalOrder' },
+    ]).option({ maxTimeMS: 5000 });
+    return Product.populate(rows, { path: 'category' });
+  }
+  let finder = Product.find(query).populate('category').sort(sort).skip(skip);
+  if (limit) finder = finder.limit(limit).maxTimeMS(5000);
+  return finder;
+}
 
 exports.checkDuplicates = asyncHandler(async (req, res) => {
   const name = String(req.query.name || '').trim().slice(0, 160);
@@ -322,9 +350,13 @@ async function buildPublicCatalogFacets(req, catalogConfiguration, configuredAtt
     Product.find(visibility).select('name sku brand category subCategory price originalPrice salePrice saleStartAt saleEndAt discountPercentage rating stock sizes colors variants fabric occasion description shortDescription tags attributeValues isFeatured isNewArrival isBestSeller showInTrending').lean(),
     Category.find(andFilter({ isActive: { $ne: false }, isArchived: { $ne: true } }, req.tenantFilter)).select('_id name slug previousSlugs').lean(),
   ]);
-  const products = rawProducts.map((product) => applyEffectivePricing(product));
+  const rentalRates = req.rentalCatalogRates;
+  const products = rawProducts.map((product) => rentalRates
+    ? { ...product, price: (rentalRates.get(String(product._id))?.dailyRatePaise || 0) / 100, discountPercentage: 0 }
+    : applyEffectivePricing(product));
   const categoryById = new Map(categories.map((category) => [String(category._id), category]));
-  const filters = req.query || {};
+  const filters = { ...(req.query || {}) };
+  if (rentalRates) { delete filters.stock; delete filters.discount; }
   const matching = (...ignored) => products.filter((product) => productMatchesPublicFilters(product, filters, categoryById, new Set(ignored), configuredAttributes));
   const categoryProducts = matching('category');
   const sizeProducts = matching('size');
@@ -365,9 +397,9 @@ async function buildPublicCatalogFacets(req, catalogConfiguration, configuredAtt
     fabrics: buildFacetOptions(products.flatMap((product) => splitStoredValues(product.fabric)), fabricProducts, (product, value) => hasStoredValue(product.fabric, value)),
     occasions: buildFacetOptions(products.flatMap((product) => splitStoredValues(product.occasion)), occasionProducts, (product, value) => hasStoredValue(product.occasion, value)),
     prices: buildFacetPriceBuckets(products, priceProducts),
-    discounts: [50, 40, 30, 20, 10].map((value) => ({ value: String(value), label: `${value}% and above`, count: discountProducts.filter((product) => Number(product.discountPercentage || 0) >= value).length })),
+    discounts: rentalRates ? [] : [50, 40, 30, 20, 10].map((value) => ({ value: String(value), label: `${value}% and above`, count: discountProducts.filter((product) => Number(product.discountPercentage || 0) >= value).length })),
     ratings: [4, 3, 2].map((value) => ({ value: String(value), label: `${value}★ & above`, count: ratingProducts.filter((product) => Number(product.rating || 0) >= value).length })),
-    availability: [
+    availability: rentalRates ? [] : [
       { value: 'in', label: 'In stock', count: stockProducts.filter((product) => Number(product.stock || 0) > 0).length },
       { value: 'out', label: 'Out of stock', count: stockProducts.filter((product) => Number(product.stock || 0) <= 0).length },
     ],
@@ -522,7 +554,7 @@ exports.analyzeQuickAdd = async (req, res) => {
 };
 
 exports.createProduct = asyncHandler(async (req, res) => {
-  await require('../services/productRentalPricing').prepare(req.body?.rentalPricing);
+  await require('../services/productRentalPricing').prepare(req.body?.rentalPricing, { requireInventory: ['RENTAL_ONLY', 'SALE_AND_RENTAL'].includes(req.body?.commerceMode) });
   await require('../services/storefrontDiscoveryService').validateComplements(req, req.body || {});
   const basePayload = await applyProductStructure(withStoreId({ ...req.body, images: sanitizeProductImages(req.body.images) }, req));
   const categoryName = await getCategoryName(basePayload.category, req);
@@ -563,6 +595,9 @@ exports.updateProduct = asyncHandler(async (req, res) => {
   const existingProduct = await Product.findOne(catalogQuery(req, { _id: req.params.id }));
   if (!existingProduct) return res.status(404).json({ message: 'Product not found' });
   assertStoreOwned(existingProduct, req);
+  if (['RENTAL_ONLY', 'SALE_AND_RENTAL'].includes(req.body?.commerceMode) && !req.body?.rentalPricing && !(await require('../models/Rental').Listing.exists({ storeId: existingProduct.storeId || req.store?._id, productId: existingProduct._id }))) {
+    throw new ApiError('VALIDATION_ERROR', 'Enter rental pricing and physical pieces when enabling rental for this product.');
+  }
   await require('../services/storefrontDiscoveryService').validateComplements(req, req.body || {}, existingProduct._id, existingProduct.storeId);
   const expectedInventoryRevision = req.body?.inventoryRevision === undefined ? null : Number(req.body.inventoryRevision);
   if (expectedInventoryRevision !== null && (!Number.isSafeInteger(expectedInventoryRevision) || expectedInventoryRevision < 0)) return res.status(400).json({ message: 'Inventory revision must be a whole number of zero or more' });

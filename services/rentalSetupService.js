@@ -56,28 +56,36 @@ async function detail(store, id) {
   return { listing, product, ...(await readiness(store, listing)), shopEnabled: configuration.mode !== 'SALE_ONLY', onlinePayments: configuration.readiness.onlinePayments, acceptingOrders: configuration.readiness.acceptingOrders, contact: configuration.contact, policyRevision: configuration.revision };
 }
 async function registerPieces(store, id, input) {
-  const operationId = A.operation(input.operationId), quantity = A.integer(input.quantity, 'actual quantity to register', 1, 100);
-  const componentIndex = A.integer(input.componentIndex, 'component', 0, 11);
-  const fingerprint = require('./rentalStudioAlgorithms').fingerprint({ id, componentIndex, quantity, location: input.location || '', condition: input.condition || 'Good' });
   return require('./rentalService').transaction(store, async session => {
-    const existing = await M.Asset.find({ storeId: store._id, registrationBatchId: operationId }).session(session).lean();
-    if (existing.length) {
-      if (existing.length !== quantity || existing.some(row => row.registrationFingerprint !== fingerprint)) throw new ApiError('DUPLICATE_REQUEST', 'This piece-registration attempt belongs to different details.');
-      return { rows: existing, quantity, replay: true };
-    }
     const listing = await M.Listing.findOne({ _id: A.id(id), storeId: store._id }).session(session).lean();
     if (!listing) throw new ApiError('NOT_FOUND', 'Rental offer not found.');
-    if (listing.revision !== input.revision) throw new ApiError('DUPLICATE_REQUEST', 'Offer changed. Reload setup before registering pieces.');
-    const component = listing.requirements[componentIndex];
-    if (!component) throw new ApiError('VALIDATION_ERROR', 'Choose an existing component.');
-    const values = { poolKey: component.poolKey, productId: component.productId || listing.productId, variantId: component.variantId || (listing.requirements.length === 1 ? listing.variantId : ''), size: component.size || '', colour: component.colour || '' };
-    const binding = await I.binding(store, values, null, session);
-    const prefix = `R-${String(listing._id).slice(-8)}-${componentIndex + 1}-${require('node:crypto').createHash('sha256').update(operationId).digest('hex').slice(0, 16)}`.toUpperCase();
-    const rows = await M.Asset.insertMany(Array.from({ length: quantity }, (_, i) => ({ storeId: store._id, ...values, ...binding,
-      code: `${prefix}-${String(i + 1).padStart(3, '0')}`, label: A.text(component.label, 190) + ` #${i + 1}`,
-      location: A.text(input.location || '', 200), condition: A.text(input.condition || 'Good', 1000),
-      registrationBatchId: operationId, registrationFingerprint: fingerprint })), { session });
-    return { rows: rows.map(row => row.toObject()), quantity, replay: false };
+    return registerPiecesInSession(store, listing, input, session, { checkRevision: true });
   });
 }
-module.exports = { readiness, batchReadiness, detail, registerPieces };
+// Product publication uses the same piece registration inside its own transaction.
+async function registerPiecesInSession(store, listing, input, session, { checkRevision = false } = {}) {
+  if (!session) throw new ApiError('SERVICE_UNAVAILABLE', 'Registering rental pieces requires a transaction.');
+  const id = String(listing._id);
+  const operationId = A.operation(input.operationId), quantity = A.integer(input.quantity, 'actual quantity to register', 1, 100);
+  const componentIndex = A.integer(input.componentIndex, 'component', 0, 11);
+  const status = input.status || 'READY';
+  if (!['READY', 'CLEANING', 'REPAIR'].includes(status)) throw new ApiError('VALIDATION_ERROR', 'Choose the condition of the new rental pieces.');
+  const fingerprint = require('./rentalStudioAlgorithms').fingerprint({ id, componentIndex, quantity, location: input.location || '', condition: input.condition || 'Good', ...(status !== 'READY' ? { status } : {}) });
+  const existing = await M.Asset.find({ storeId: store._id, registrationBatchId: operationId }).session(session).lean();
+  if (existing.length) {
+    if (existing.length !== quantity || existing.some(row => row.registrationFingerprint !== fingerprint)) throw new ApiError('DUPLICATE_REQUEST', 'This piece-registration attempt belongs to different details.');
+    return { rows: existing, quantity, replay: true };
+  }
+  if ((checkRevision || input.revision !== undefined) && listing.revision !== input.revision) throw new ApiError('DUPLICATE_REQUEST', 'Offer changed. Reload setup before registering pieces.');
+  const component = listing.requirements[componentIndex];
+  if (!component) throw new ApiError('VALIDATION_ERROR', 'Choose an existing component.');
+  const values = { poolKey: component.poolKey, productId: component.productId || listing.productId, variantId: component.variantId || (listing.requirements.length === 1 ? listing.variantId : ''), size: component.size || (listing.requirements.length === 1 ? listing.size : '') || '', colour: component.colour || (listing.requirements.length === 1 ? listing.colour : '') || '' };
+  const binding = await I.binding(store, values, null, session);
+  const prefix = `R-${String(listing._id).slice(-8)}-${componentIndex + 1}-${require('node:crypto').createHash('sha256').update(operationId).digest('hex').slice(0, 16)}`.toUpperCase();
+  const rows = await M.Asset.insertMany(Array.from({ length: quantity }, (_, i) => ({ storeId: store._id, ...values, ...binding,
+    code: `${prefix}-${String(i + 1).padStart(3, '0')}`, label: A.text(component.label, 190) + ` #${i + 1}`,
+    location: A.text(input.location || '', 200), condition: A.text(input.condition || 'Good', 1000), status,
+    registrationBatchId: operationId, registrationFingerprint: fingerprint })), { session });
+  return { rows: rows.map(row => row.toObject()), quantity, replay: false };
+}
+module.exports = { readiness, batchReadiness, detail, registerPieces, registerPiecesInSession };

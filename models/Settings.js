@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const settingsSchema = new mongoose.Schema({
-  storeName: { type: String, default: 'Jassi General Store' },
+  storeName: { type: String, default: 'Jassi Bridal Bazar Dharmshala' },
   brandIdentityEnabled: { type: Boolean, default: false },
   contactDetailsEnabled: { type: Boolean, default: false },
   logoUrl: String,

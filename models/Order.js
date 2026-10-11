@@ -19,6 +19,10 @@ const PAYMENT_STATE_TO_STATUS = {
 
 const orderSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  customer: {
+    type: new mongoose.Schema({ name: String, email: String, phone: String }, { _id: false }),
+    default: undefined,
+  },
   orderItems: [{
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
     category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' },

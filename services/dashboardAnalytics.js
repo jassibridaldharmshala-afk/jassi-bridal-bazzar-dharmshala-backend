@@ -134,6 +134,7 @@ async function adminOrderFilter(query = {}, tenantFilter) {
     filters.push({ $or: [
       { user: { $in: users.map(user => user._id) } }, { invoiceNumber: regex },
       { 'shippingAddress.fullName': regex }, { 'shippingAddress.mobile': regex },
+      { 'customer.name': regex }, { 'customer.email': regex }, { 'customer.phone': regex }, { 'shippingAddress.email': regex },
       { 'orderItems.name': regex }, { 'orderItems.sku': regex },
       { shipment: { $in: shipments.map(item => item._id) } },
       { $expr: { $regexMatch: { input: { $toString: '$_id' }, regex: text, options: 'i' } } },
@@ -201,7 +202,7 @@ async function dashboardOverview(query = {}, tenantFilter) {
   const orderLimit = [5, 10, 20].includes(Number(query.orderLimit)) ? Number(query.orderLimit) : 5;
   const total = value(c, 'orders'); const totalPages = Math.max(1, Math.ceil(total / orderLimit));
   const page = Math.min(orderPage, totalPages);
-  const recentOrders = await Order.find(scoped(current)).select('user shippingAddress.fullName invoiceNumber createdAt finalAmount adjustedFinalAmount orderStatus paymentStatus paymentMethod orderItems.quantity orderItems.cancelledQuantity')
+  const recentOrders = await Order.find(scoped(current)).select('user customer shippingAddress.fullName invoiceNumber createdAt finalAmount adjustedFinalAmount orderStatus paymentStatus paymentMethod orderItems.quantity orderItems.cancelledQuantity')
     .populate('user', 'name').sort({ createdAt: -1, _id: -1 }).skip((page - 1) * orderLimit).limit(orderLimit).lean();
   return {
     schemaVersion: 2,

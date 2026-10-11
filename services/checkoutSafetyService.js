@@ -36,6 +36,7 @@ function checkoutFingerprint(body = {}, paymentMethod) {
     couponCode: String(body.coupon?.code || body.couponCode || '').trim().toUpperCase(),
     address: {
       fullName: String(address.fullName || '').trim(), mobile: String(address.mobile || address.phone || '').replace(/\D/g, ''),
+      email: String(address.email || '').trim().toLowerCase(),
       pincode: String(address.pincode || '').replace(/\D/g, ''), state: String(address.state || '').trim(), city: String(address.city || '').trim(),
       houseNo: String(address.houseNo || address.houseNumber || '').trim(), area: String(address.area || '').trim(), landmark: String(address.landmark || '').trim(),
     },

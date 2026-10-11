@@ -23,14 +23,18 @@ beforeEach(async () => {
   admin = await F.createAdmin(); customer = await F.createCustomer(); category = (await F.createProduct()).category;
   await S.saveConfiguration(store, { revision: 0, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY } });
 });
-async function create(mode = 'SALE_AND_RENTAL', enabled) {
+async function create(mode = 'SALE_AND_RENTAL', enabled, name = 'Linked bridal outfit') {
   const res = await H.request('/api/admin/products', { method: 'POST', token: admin.token, body: {
-    name: 'Linked bridal outfit', sku: op(), category: String(category), price: 5000, originalPrice: 6000,
+    name, sku: op(), category: String(category), price: 5000, originalPrice: 6000,
     stock: 0, sizes: [], sizingMode: 'free-size', commerceMode: mode,
     images: [{ url: 'https://example.test/bridal.webp', primary: true }],
-    rentalPricing: { dailyRatePaise: 75000, depositPaise: 100000, advanceMode: 'STORE', ...(enabled !== undefined ? { enabled } : {}) },
+    rentalPricing: { dailyRatePaise: 75000, depositPaise: 100000, advanceMode: 'STORE', inventory: [{ componentIndex: 0, quantity: 1 }], ...(enabled !== undefined ? { enabled } : {}) },
   } });
   assert.equal(res.status, 201, JSON.stringify(res.data));
+  // These catalogue/link fixtures model older offers whose physical inventory
+  // is subsequently supplied by each scenario. New creation is covered by
+  // productRentalSetup.integration.test.js with no fixture cleanup.
+  await M.Asset.deleteMany({ productId: res.data._id });
   return { product: res.data, listing: await M.Listing.findOne({ productId: res.data._id }).lean() };
 }
 async function piece(productId, pool = 'old-stock', code = 'LEHENGA-001') {
@@ -67,12 +71,67 @@ test('product-created mixed offer appears across storefront APIs with existing e
   await assert.rejects(() => hold(listing), /unavailable/);
 });
 
+test('shared customer catalogue shows one card per design, including product-created and Studio offers', async () => {
+  const first = await create(); const second = await create(undefined, undefined, 'Second bridal outfit');
+  for (const [index, row] of [first, second].entries()) {
+    for (let unit = 0; unit < 3; unit++) await piece(row.product._id, 'existing-stock', `DESIGN-${index}-${unit}`);
+  }
+  const twoDesigns = await H.request('/api/products?mode=rent&page=1');
+  assert.equal(twoDesigns.data.total, 2);
+  assert.equal(await M.Asset.countDocuments({ storeId: store._id }), 6);
+  const third = await F.createProduct({ storeId: store._id, commerceMode: 'RENTAL_ONLY', stock: 0 });
+  await piece(third._id, 'studio-stock', 'STUDIO-01');
+  await S.saveListing(store, { productId: third._id, active: true, dailyRatePaise: 45000, depositPaise: 0,
+    requirements: [{ poolKey: 'studio-stock', label: 'Outfit', quantity: 1 }] });
+  await S.saveListing(store, { productId: first.product._id, active: true, dailyRatePaise: 95000, depositPaise: 0,
+    requirements: [{ poolKey: 'existing-stock', label: 'Outfit', quantity: 1 }] });
+  const response = await H.request('/api/products?mode=rent&page=1&limit=24&includeFacets=true');
+  assert.equal(response.status, 200, JSON.stringify(response.data));
+  assert.equal(response.data.total, 3); assert.equal(response.data.items.length, 3);
+  assert.equal(new Set(response.data.items.map(row => row._id)).size, 3);
+  assert.equal(response.data.items.find(row => row._id === first.product._id).rentalPreview.dailyRatePaise, 75000);
+  assert.equal(await M.Asset.countDocuments({ storeId: store._id }), 7);
+  assert.deepEqual(response.data.facets.availability, []);
+  assert.deepEqual(response.data.facets.discounts, []);
+});
+
+test('shared rental price filter, facets and paged sort use rent; Buy retains independent sale pricing', async () => {
+  const first = await create(); const second = await create(undefined, undefined, 'Second bridal outfit');
+  await piece(first.product._id, 'one', 'FIRST'); await piece(second.product._id, 'two', 'SECOND');
+  await Product.updateOne({ _id: first.product._id }, { $set: { name: 'Low rent costly sale', price: 9000 } });
+  await Product.updateOne({ _id: second.product._id }, { $set: { name: 'High rent low sale', price: 1000 } });
+  await M.Listing.updateOne({ _id: first.listing._id }, { $set: { dailyRatePaise: 35000 } });
+  await M.Listing.updateOne({ _id: second.listing._id }, { $set: { dailyRatePaise: 125000 } });
+  const call = query => H.request('/api/products?' + query);
+  const low = await call('mode=rent&page=1&limit=1&sort=priceLowHigh&includeFacets=true');
+  assert.equal(low.status, 200, JSON.stringify(low.data));
+  assert.equal(low.data.total, 2); assert.equal(low.data.totalPages, 2);
+  assert.equal(low.data.items[0]._id, first.product._id);
+  assert.equal(low.data.items[0].price, 9000);
+  assert.equal(low.data.items[0].rentalPreview.dailyRatePaise, 35000);
+  assert(low.data.facets.prices.every(bucket => bucket.max <= 1250));
+  assert(low.data.facets.prices.some(bucket => bucket.min <= 350 && bucket.max >= 350 && bucket.count === 1));
+  const next = await call('mode=rent&page=2&limit=1&sort=priceLowHigh');
+  assert.equal(next.data.items[0]._id, second.product._id);
+  const high = await call('mode=rent&page=1&sort=priceHighLow');
+  assert.equal(high.data.items[0]._id, second.product._id);
+  const filtered = await call(`mode=rent&page=1&minPrice=300&maxPrice=400&category=${category}&includeFacets=true`);
+  assert.equal(filtered.status, 200, JSON.stringify(filtered.data));
+  assert.equal(filtered.data.total, 1); assert.equal(filtered.data.items[0]._id, first.product._id);
+  const staleSaleFilters = await call('mode=rent&page=1&stock=in&discount=50');
+  assert.equal(staleSaleFilters.data.total, 2);
+  const buy = await call('mode=buy&page=1&search=rent&sort=priceLowHigh');
+  assert.equal(buy.data.items[0]._id, second.product._id);
+  const search = await call('mode=rent&page=1&search=costly');
+  assert.equal(search.data.total, 1); assert.equal(search.data.items[0]._id, first.product._id);
+});
+
 test('rental-only and draft-published products use the same link without a separate Studio offer', async () => {
   const { product } = await create('RENTAL_ONLY'); await piece(product._id);
   const draft = await H.request('/api/admin/product-drafts', { method: 'POST', token: admin.token, body: {
     name: 'Draft linked jewellery', category: String(category), price: 4000, originalPrice: 5000, stock: 0,
     sizingMode: 'free-size', commerceMode: 'SALE_AND_RENTAL', images: [{ url: 'https://example.test/set.webp' }],
-    rentalPricing: { dailyRatePaise: 50000, depositPaise: 0, advanceMode: 'STORE' },
+    rentalPricing: { dailyRatePaise: 50000, depositPaise: 0, advanceMode: 'STORE', inventory: [{ componentIndex: 0, quantity: 1 }] },
   } });
   assert.equal(draft.status, 201);
   const published = await H.request('/api/admin/product-drafts/publish-selected', { method: 'POST', token: admin.token,

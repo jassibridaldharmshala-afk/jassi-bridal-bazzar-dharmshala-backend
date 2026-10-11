@@ -50,7 +50,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.get('/uploads/:filename', sendImagePlaceholder);
 app.get('/placeholder.jpg', sendImagePlaceholder);
 
-app.get('/', (req, res) => res.json({ message: "Jassi General Store API is running" }));
+app.get('/', (req, res) => res.json({ message: "Jassi Bridal Bazar Dharmshala API is running" }));
 app.get('/health', async (req, res) => {
   const dbStates = ['disconnected', 'connected', 'connecting', 'disconnecting'];
   const database = dbStates[mongoose.connection.readyState] || 'unknown';
@@ -169,7 +169,7 @@ function sendImagePlaceholder(req, res, next) {
   const filename = String(req.params.filename || 'placeholder.jpg');
   if (!/\.(png|jpe?g|webp|gif|svg)$/i.test(filename)) return next();
 
-  const label = filename.toLowerCase().includes('placeholder') ? 'Jassi General Store' : 'Image unavailable';
+  const label = filename.toLowerCase().includes('placeholder') ? 'Jassi Bridal Bazar Dharmshala' : 'Image unavailable';
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000" viewBox="0 0 800 1000">
       <defs>

@@ -201,7 +201,7 @@ async function blockAsset(store, input) {
     return row.toObject();
   });
 }
-async function assertNoCustomerDuplicate(store, lines, dates, customerUserId, session) {
+async function findCustomerDuplicate(store, lines, dates, customerUserId, session) {
   if (!mongoose.isValidObjectId(customerUserId)) return;
   const productIds = lines.map(line => String(line.listing.productId));
   const listingIds = lines.map(line => String(line.listing._id));
@@ -210,7 +210,7 @@ async function assertNoCustomerDuplicate(store, lines, dates, customerUserId, se
     $or: [{ status: { $ne: 'HELD' } }, { expiresAt: { $gt: new Date() } }],
     'schedule.pickupAt': { $lt: dates.returnDueAt }, 'schedule.returnDueAt': { $gt: dates.pickupAt },
     'quote.items': { $elemMatch: { $or: [{ productId: { $in: productIds } }, { listingId: { $in: listingIds } }] } },
-  }).select('_id number status quote.items allocations.listingId allocations.binding').sort('createdAt _id').session(session || null).lean();
+  }).select('_id number status schedule expiresAt quote.items allocations.listingId allocations.binding').sort('createdAt _id').session(session || null).lean();
   if (!bookings.length) return;
   // Two offers can refer to the same outfit. Different fitting/variant
   // selections remain independent, while an alternate offer cannot bypass
@@ -227,11 +227,15 @@ async function assertNoCustomerDuplicate(store, lines, dates, customerUserId, se
     const binding = booking.allocations?.find(a => String(a.listingId) === String(item.listingId) && String(a.binding?.productId) === String(item.productId))?.binding;
     const previous = binding ? { ...binding, productId: item.productId } : byId.get(String(item.listingId)) || { productId: item.productId };
     const line = lines.find(row => String(row.listing._id) === String(item.listingId) || (previous && identity(row.listing) === identity(previous)));
-    if (line) throw new ApiError('RENTAL_ALREADY_BOOKED', `You've already booked ${line.listing.title} for these dates. Open your existing booking to view payment, pickup or cancellation options.`,
-      { details: { bookingId: String(booking._id), bookingNumber: booking.number, bookingStatus: booking.status } });
+    if (line) return { booking, listing: line.listing };
   }
 }
-async function quoteInternal(store, input, session, { existing = false, counter = false, policy: oldPolicy, ignoreBooking, customerUserId } = {}) {
+async function assertNoCustomerDuplicate(store, lines, dates, customerUserId, session) {
+  const match = await findCustomerDuplicate(store, lines, dates, customerUserId, session);
+  if (match) throw new ApiError('RENTAL_ALREADY_BOOKED', `You've already booked ${match.listing.title} for these dates. Open your existing booking to view payment, pickup or cancellation options.`,
+    { details: { bookingId: String(match.booking._id), bookingNumber: match.booking.number, bookingStatus: match.booking.status } });
+}
+async function quoteInternal(store, input, session, { existing = false, counter = false, policy: oldPolicy, ignoreBooking, customerUserId, includeAvailability = false } = {}) {
   const configuration = await enabled(store, session);
   const policy = A.validatePolicy(oldPolicy || { ...configuration.policy, advancePercent: configuration.policy.advancePercent || A.DEFAULT_POLICY.advancePercent }, { existing: !!oldPolicy });
   const dates = A.schedule(input, policy, new Date(), { existing, allowImmediate: counter });
@@ -253,26 +257,40 @@ async function quoteInternal(store, input, session, { existing = false, counter 
   const price = A.quote(lines, dates, policy, input.deliveryMode || 'STORE_PICKUP', input.paymentPlan || (policy.paymentPlans || ['ADVANCE'])[0]);
   if (price.paymentPlan === 'PICKUP' || dates.billingBasis === 'USE_DAYS') dates.balanceDueAt = dates.pickupAt;
   const allocations = [];
+  const availability = [];
   const used = new Set();
-  for (const line of lines) for (const requirement of line.listing.requirements) {
+  const unavailable = message => { throw new ApiError('OUT_OF_STOCK', message, includeAvailability ? { details: { availability } } : {}); };
+  for (const line of lines) {
+    const capacity = []; let shortage = '';
+    for (const requirement of line.listing.requirements) {
     const required = requirement.quantity * line.quantity;
-    const assets = await M.Asset.find({ storeId: store._id, ...inventoryRules.assetFilter(requirement, line.listing), $or: [{ status: 'READY' }, { status: 'OUT', returnDueAt: { $gt: new Date() } }, ...(ignoreBooking ? [{ status: 'OUT', currentBookingId: ignoreBooking }] : [])] }).sort('code').limit(1000).session(session || null).lean();
+    const readyFilter = { $or: [{ status: 'READY' }, { status: 'OUT', returnDueAt: { $gt: new Date() } }, ...(ignoreBooking ? [{ status: 'OUT', currentBookingId: ignoreBooking }] : [])] };
+    const assets = await M.Asset.find({ storeId: store._id, ...inventoryRules.assetFilter(requirement, line.listing), ...(includeAvailability ? { status: { $nin: ['LOST', 'RETIRED'] } } : readyFilter) }).sort('code').limit(1000).session(session || null).lean();
     const conflicting = await M.Reservation.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, active: true, ...(ignoreBooking ? { bookingId: { $ne: ignoreBooking } } : {}), blockedFrom: { $lt: dates.blockedUntil }, blockedUntil: { $gt: dates.blockedFrom }, $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] }).session(session || null).select('assetId kind').lean();
     const excluded = new Set(conflicting.map(r => String(r.assetId)));
     const overdueWork = await M.Task.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, status: { $in: require('./rentalStudioService').openTasks }, dueAt: { $lte: new Date() } }).session(session || null).select('assetId').lean();
     for (const task of overdueWork) excluded.add(String(task.assetId));
-    const available = assets.filter(a => !a.saleConversion && inventoryRules.matchesPiece(a, requirement, line.listing) && !excluded.has(String(a._id)) && !used.has(String(a._id)));
+    const matching = assets.filter(a => !a.saleConversion && inventoryRules.matchesPiece(a, requirement, line.listing) && !used.has(String(a._id)));
+    const eligible = matching.filter(a => a.status === 'READY' || (a.status === 'OUT' && (+new Date(a.returnDueAt) > Date.now() || (ignoreBooking && String(a.currentBookingId) === String(ignoreBooking)))));
+    const available = eligible.filter(a => !excluded.has(String(a._id)));
+    const booked = new Set(conflicting.filter(r => r.kind === 'BOOKING').map(r => String(r.assetId)));
+    capacity.push({ total: Math.floor(matching.length / requirement.quantity), available: Math.floor(available.length / requirement.quantity), booked: Math.ceil(matching.filter(a => booked.has(String(a._id))).length / requirement.quantity) });
     if (available.length < required) {
-      const booked = new Set(conflicting.filter(r => r.kind === 'BOOKING').map(r => String(r.assetId)));
-      const otherwiseAvailable = assets.filter(a => !a.saleConversion && inventoryRules.matchesPiece(a, requirement, line.listing) && !used.has(String(a._id)) && booked.has(String(a._id)));
-      fail(otherwiseAvailable.length ? `${line.listing.title} is already booked for these dates and the requested quantity is unavailable. Choose other dates or another rental item. Pickup, return and cleaning time are included in the availability check.` : `${line.listing.title}: ${requirement.label} is unavailable for these dates. Choose other dates or another rental item.`, 'OUT_OF_STOCK');
+      const otherwiseAvailable = eligible.filter(a => booked.has(String(a._id)));
+      shortage ||= otherwiseAvailable.length ? `${line.listing.title} is already booked for these dates and the requested quantity is unavailable. Choose other dates or another rental item. Pickup, return and cleaning time are included in the availability check.` : `${line.listing.title}: ${requirement.label} is unavailable for these dates. Choose other dates or another rental item.`;
     }
     for (const asset of available.slice(0, required)) { used.add(String(asset._id)); allocations.push({ listingId: line.listing._id, assetId: asset._id, code: asset.code, label: asset.label, binding: { inventoryScope: inventoryRules.usesProductInventory(requirement, line.listing) ? 'PRODUCT' : 'POOL', poolKey: requirement.poolKey, productId: requirement.productId || (line.listing.requirements.length === 1 ? line.listing.productId : undefined), variantId: requirement.variantId || (line.listing.requirements.length === 1 ? line.listing.variantId : ''), size: requirement.size || (line.listing.requirements.length === 1 ? line.listing.size : ''), colour: requirement.colour || (line.listing.requirements.length === 1 ? line.listing.colour : '') } }); }
+    }
+    const totalQuantity = Math.min(...capacity.map(c => c.total)), availableQuantity = Math.min(...capacity.map(c => c.available));
+    const bookedQuantity = Math.min(totalQuantity - availableQuantity, Math.max(...capacity.map(c => c.booked)));
+    availability.push({ listingId: String(line.listing._id), title: line.listing.title, requestedQuantity: line.quantity, totalQuantity, availableQuantity, bookedQuantity, blockedQuantity: Math.max(0, totalQuantity - availableQuantity - bookedQuantity) });
+    if (shortage) unavailable(shortage);
   }
-  await assertSlotCapacity(store, dates, policy, session, ignoreBooking);
-  if (!(await bindingsEligible(store, allocations, session))) fail('An allocated component product or variant is no longer published/available.', 'OUT_OF_STOCK');
+  try { await assertSlotCapacity(store, dates, policy, session, ignoreBooking); }
+  catch (error) { if (includeAvailability && error.errorCode === 'OUT_OF_STOCK') error.details = { availability }; throw error; }
+  if (!(await bindingsEligible(store, allocations, session))) unavailable('An allocated component product or variant is no longer published/available.');
   if (policy.requireConditionPhotos && allocations.length > 50) fail('A booking with compulsory condition photos supports at most 50 physical pieces. Split the booking so every handover and return has evidence.', 'VALIDATION_ERROR');
-  return { quote: price, schedule: dates, policy, policyRevision: configuration.revision, allocations };
+  return { quote: price, schedule: dates, policy, policyRevision: configuration.revision, allocations, ...(includeAvailability ? { availability } : {}) };
 }
 async function assertSlotCapacity(store, dates, policy, session, ignoreBooking) {
   for (const field of ['pickupAt', 'returnDueAt']) {
@@ -280,10 +298,10 @@ async function assertSlotCapacity(store, dates, policy, session, ignoreBooking) 
     if (count >= policy.slotCapacity) fail('That pickup/return slot is full. Choose another time.', 'OUT_OF_STOCK');
   }
 }
-async function publicQuote(store, input, { counter = false, customerUserId } = {}) {
+async function publicQuote(store, input, { counter = false, customerUserId, includeAvailability = false } = {}) {
   assertStoreCanAcceptOrders(store, { rental: true });
-  const data = await quoteInternal(store, input, null, { counter, customerUserId });
-  return { quote: data.quote, quoteFingerprint: A.quoteFingerprint(store._id, data), schedule: data.schedule, terms: data.policy.terms, policyRevision: data.policyRevision, timezone: data.policy.timezone, policySummary: { graceHours: data.policy.graceHours, lateFeePerDayPaise: data.policy.lateFeePerDayPaise, cancellationRules: data.policy.cancellationRules, preparationHours: data.policy.preparationHours, cleaningHours: data.policy.cleaningHours, advanceMode: data.policy.advanceMode, advancePercent: data.policy.advancePercent, advanceAmountPaise: data.policy.advanceAmountPaise, depositTiming: data.policy.depositTiming, noShowGraceHours: data.policy.noShowGraceHours, noShowRetainPercent: data.policy.noShowRetainPercent, earlyReturnPolicy: data.policy.earlyReturnPolicy, requireConditionPhotos: data.policy.requireConditionPhotos, requireCustomerAcknowledgement: data.policy.requireCustomerAcknowledgement } };
+  const data = await quoteInternal(store, input, null, { counter, customerUserId, includeAvailability });
+  return { quote: data.quote, quoteFingerprint: A.quoteFingerprint(store._id, data), schedule: data.schedule, ...(includeAvailability ? { availability: data.availability } : {}), terms: data.policy.terms, policyRevision: data.policyRevision, timezone: data.policy.timezone, policySummary: { graceHours: data.policy.graceHours, lateFeePerDayPaise: data.policy.lateFeePerDayPaise, cancellationRules: data.policy.cancellationRules, preparationHours: data.policy.preparationHours, cleaningHours: data.policy.cleaningHours, advanceMode: data.policy.advanceMode, advancePercent: data.policy.advancePercent, advanceAmountPaise: data.policy.advanceAmountPaise, depositTiming: data.policy.depositTiming, noShowGraceHours: data.policy.noShowGraceHours, noShowRetainPercent: data.policy.noShowRetainPercent, earlyReturnPolicy: data.policy.earlyReturnPolicy, requireConditionPhotos: data.policy.requireConditionPhotos, requireCustomerAcknowledgement: data.policy.requireCustomerAcknowledgement } };
 }
 async function enqueue(booking, event, session, token, { audiences = ['OWNER', 'CUSTOMER'] } = {}) {
   for (const audience of audiences) for (const channel of ['IN_APP', 'EMAIL', 'WHATSAPP']) {
@@ -321,7 +339,8 @@ function present(booking, { staff = true } = {}) {
   return value;
 }
 function contact(input, user) {
-  const name = A.text(input.name || user?.name || '', 100), phone = A.text(input.phone || user?.phone || '', 25), email = A.text(input.email || user?.email || '', 254);
+  const { customerName, customerEmail } = require('../utils/customerIdentity');
+  const name = customerName(A.text(input.name ?? user?.name ?? '', 100)), phone = A.text(input.phone || user?.phone || '', 25), email = customerEmail(A.text(input.email ?? user?.email ?? '', 254));
   if (!name || !/^\+?[1-9]\d{9,14}$/.test(phone.replace(/[\s()-]/g, '')) || (email && !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email))) fail('Enter the customer name, valid phone and optional email.', 'VALIDATION_ERROR');
   return { name, phone: phone.replace(/[\s()-]/g, ''), email, whatsappConsent: input.whatsappConsent === true };
 }
@@ -1004,3 +1023,4 @@ async function reconcileRefunds(store) {
 async function releaseBlock(store, blockId) { return transaction(store, async session => { const r = await M.Reservation.findOneAndUpdate({ _id: A.id(blockId), storeId: store._id, kind: 'MAINTENANCE' }, { $set: { active: false } }, { new: true, session }); if (!r) fail('Maintenance block not found.', 'NOT_FOUND'); return r; }); }
 module.exports = { ensureIndexes, readConfiguration, saveConfiguration, transaction, saveListing, saveAsset, changeAsset, blockAsset, releaseBlock, publicQuote, hold, getBooking, present, recordCollection, mutateBooking, requestChange, resolveRequest, reschedule, replacePiece, cancelItems, createPayment, verifyPayment, refund, handleWebhook, expireHolds, publicListings, catalogue, report, listBookings, workspace, managementRows, paymentMethods, reconcilePayments, reconcileRefunds, listPayments, recoverPayment, enqueue, activeStates };
 module.exports.event = event;
+module.exports.findCustomerDuplicate = findCustomerDuplicate;

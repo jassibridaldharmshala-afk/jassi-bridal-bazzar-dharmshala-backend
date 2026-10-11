@@ -427,7 +427,7 @@ exports.publishSelected = asyncHandler(async (req, res) => {
 });
 
 async function publishPreparedDraft(draft, prepared, { userId } = {}) {
-    await require('../services/productRentalPricing').prepare(draft.rentalPricing);
+    await require('../services/productRentalPricing').prepare(draft.rentalPricing, { requireInventory: ['RENTAL_ONLY', 'SALE_AND_RENTAL'].includes(draft.commerceMode) });
     const token = require('node:crypto').randomUUID();
     const baseRevision = Number(draft.revision || 0);
     // On replica sets the claim, product, inventory and publication state
@@ -528,7 +528,7 @@ function draftReadiness(data = {}) {
   else if (data.category?.isArchived) issues.push('Choose an active category');
   if (!images.length && !data.image) issues.push('Add at least one product photo');
   if (!Number.isFinite(price) || price <= 0) issues.push('Add a valid selling price');
-  if (data.commerceMode && data.commerceMode !== 'SALE_ONLY') { try { require('../services/productRentalPricing').values(data.rentalPricing); } catch (error) { issues.push(error.message); } }
+  if (data.commerceMode && data.commerceMode !== 'SALE_ONLY') { try { require('../services/productRentalPricing').values(data.rentalPricing, { requireInventory: true }); } catch (error) { issues.push(error.message); } }
   if (!Number.isFinite(originalPrice) || originalPrice < price) issues.push('MRP must be equal to or above the selling price');
   if (!Number.isSafeInteger(Number(data.stock)) || Number(data.stock) < 0) issues.push('Add a whole-number stock quantity');
   if (!issues.length) {
@@ -728,7 +728,7 @@ function buildProductPayloadFromDraft(draft) {
 }
 
 function validatePublishDraft(draft, prepared) {
-  if (draft.commerceMode && draft.commerceMode !== 'SALE_ONLY') { try { require('../services/productRentalPricing').values(draft.rentalPricing); } catch (error) { return `Draft "${draft.name}": ${error.message}`; } }
+  if (draft.commerceMode && draft.commerceMode !== 'SALE_ONLY') { try { require('../services/productRentalPricing').values(draft.rentalPricing, { requireInventory: true }); } catch (error) { return `Draft "${draft.name}": ${error.message}`; } }
   if (!Number.isSafeInteger(draft.stock) || draft.stock < 0) return `Draft "${draft.name}" needs a whole-number stock quantity`;
   if (draft.sourceType === 'social-import' && (!Number.isFinite(draft.sellingPrice ?? draft.price) || (draft.sellingPrice ?? draft.price) <= 0)) return `Draft "${draft.name}" needs a valid selling price`;
   if (!draft?.name || String(draft.name).trim().length < 3) return `Draft "${draft?.slug || draft?._id}" needs a product name`;

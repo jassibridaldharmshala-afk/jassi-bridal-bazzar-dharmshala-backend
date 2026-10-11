@@ -21,7 +21,7 @@ test('all premium and industry presets have complete, independent configurations
     }
   }
   presets[0].config.branding.websiteName = 'Changed';
-  assert.equal(DEFAULT_WEBSITE_CONFIG.branding.websiteName, 'Jassi General Store');
+  assert.equal(DEFAULT_WEBSITE_CONFIG.branding.websiteName, 'Jassi Bridal Bazar Dharmshala');
 });
 
 test('lightweight gallery presets keep the same appearance with no repeated business content', () => {

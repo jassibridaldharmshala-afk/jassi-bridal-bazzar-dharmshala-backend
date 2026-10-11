@@ -6,7 +6,7 @@ const { ApiError } = require('../utils/apiError');
 const { DEFAULT_STRUCTURE } = require('../config/industryPresets');
 
 const DEFAULT_STORE_SLUG = 'jassi-general-store';
-const DEFAULT_STORE_NAME = "Jassi General Store";
+const DEFAULT_STORE_NAME = "Jassi Bridal Bazar Dharmshala";
 
 function defaultStoreFilter(storeId) {
   return {

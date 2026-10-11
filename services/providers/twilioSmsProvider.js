@@ -7,7 +7,7 @@ async function sendOtp(phone, otp, override) {
   const body = new URLSearchParams({
     To: internationalPhone(phone),
     From: config.from,
-    Body: `Your Jassi General Store OTP is ${code}. It is valid for ${process.env.OTP_EXPIRY_MINUTES || 5} minutes. Do not share this OTP with anyone.`,
+    Body: `Your Jassi Bridal Bazar Dharmshala OTP is ${code}. It is valid for ${process.env.OTP_EXPIRY_MINUTES || 5} minutes. Do not share this OTP with anyone.`,
   });
   const { response, data } = await requestJson(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.accountSid)}/Messages.json`, {
     method: 'POST',

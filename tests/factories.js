@@ -70,7 +70,7 @@ async function createCoupon(overrides = {}) {
 
 async function setSettings(overrides = {}) {
   return Settings.findOneAndUpdate({}, {
-    storeName: 'Jassi General Store',
+    storeName: 'Jassi Bridal Bazar Dharmshala',
     codEnabled: true,
     smartCodVerificationEnabled: false,
     codCharge: 0,

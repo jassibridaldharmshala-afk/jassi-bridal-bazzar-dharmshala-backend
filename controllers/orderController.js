@@ -24,6 +24,7 @@ const { readAttribution } = require('../utils/attribution');
 const { logAudit } = require('../services/auditService');
 const { recordEventLater } = require('../services/analyticsService');
 const { normalizeIndianMobile } = require('../utils/phoneUtils');
+const { orderCustomer } = require('../utils/customerIdentity');
 const { adminOrderFilter } = require('../services/dashboardAnalytics');
 const { assertOrderTransition, canCancelOrder, publicWorkflow } = require('../services/orderWorkflowService');
 const { applyCustomerRestrictionsToPaymentOptions, assertCustomerCanCheckout, getCustomerRestrictions } = require('../services/customerAccessService');
@@ -97,6 +98,7 @@ function assertShippingAddress(address) {
   const pincode = clean.pincode;
   if (!/^\d{6}$/.test(pincode)) throw new ApiError('VALIDATION_ERROR', 'Please select an address with a valid 6-digit pincode');
   if (!clean.fullName) throw new ApiError('VALIDATION_ERROR', 'Delivery address needs a contact name');
+  if (clean.email && (clean.email.length > 254 || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(clean.email))) throw new ApiError('VALIDATION_ERROR', 'Enter a valid email address, or leave it blank.');
   if (!/^[6-9]\d{9}$/.test(clean.mobile)) {
     throw new ApiError('VALIDATION_ERROR', 'Delivery address needs a valid 10-digit mobile number');
   }
@@ -986,7 +988,7 @@ async function buildReceipt(order) {
   return {
     orderId: order._id,
     orderDate: order.createdAt,
-    customer: order.user,
+    customer: orderCustomer(order),
     shippingAddress: order.shippingAddress,
     items: publicOrderLines(order.orderItems),
     paymentMethod: order.paymentMethod,
@@ -1021,7 +1023,7 @@ async function buildReceipt(order) {
     storeDetails: {
       logoUrl: settings?.logoUrl,
       invoiceNote: settings?.invoiceNote,
-      storeName: settings?.storeName || 'Jassi General Store',
+      storeName: settings?.storeName || 'Jassi Bridal Bazar Dharmshala',
       legalBusinessName: settings?.legalBusinessName,
       gstin: settings?.gstin,
       contactEmail: settings?.contactEmail,

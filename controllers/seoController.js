@@ -61,8 +61,8 @@ exports.productShare = asyncHandler(async (req, res) => {
   const product = await Product.findOne(andFilter({ slug: req.params.slug, isActive: true, isArchived: { $ne: true } }, req.tenantFilter));
   const origin = siteOrigin(req);
   const store = product?.storeId ? await Store.findById(product.storeId) : await ensureDefaultStore();
-  const title = product?.metaTitle || product?.name || 'Jassi General Store';
-  const description = product?.metaDescription || product?.shortDescription || product?.description || 'Ethnic wear from Jassi General Store.';
+  const title = product?.metaTitle || product?.name || 'Jassi Bridal Bazar Dharmshala';
+  const description = product?.metaDescription || product?.shortDescription || product?.description || 'Ethnic wear from Jassi Bridal Bazar Dharmshala.';
   const image = product?.images?.find((item) => item.primary)?.url || product?.images?.[0]?.url || `${origin}/logo192.png`;
   const storeById = new Map(store?._id ? [[String(store._id), store.slug]] : []);
   const url = `${origin}${productPath(product || { slug: req.params.slug, storeId: store?._id }, storeById)}`;
@@ -101,7 +101,7 @@ exports.productShare = asyncHandler(async (req, res) => {
   <meta http-equiv="refresh" content="0;url=${escapeHtml(url)}" />
 </head>
 <body>
-  <p>${escapeHtml(store?.name || 'Jassi General Store')} — <a href="${escapeHtml(url)}">${escapeHtml(title)}</a></p>
+  <p>${escapeHtml(store?.name || 'Jassi Bridal Bazar Dharmshala')} — <a href="${escapeHtml(url)}">${escapeHtml(title)}</a></p>
 </body>
 </html>`);
 });

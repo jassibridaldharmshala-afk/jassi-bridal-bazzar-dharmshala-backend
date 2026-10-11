@@ -1,11 +1,13 @@
 const mongoose = require('mongoose');
 const { normalizeIndianMobile } = require('../utils/phoneUtils');
+const { customerName, customerEmail } = require('../utils/customerIdentity');
 
 function snapshotAddress(address = {}) {
   const source = address && typeof address === 'object' ? address : {};
   const mobile = normalizeIndianMobile(source.mobile || source.phone);
   return {
-    fullName: String(source.fullName || '').trim(),
+    fullName: customerName(String(source.fullName || '')),
+    email: customerEmail(source.email),
     mobile,
     alternateMobile: String(source.alternateMobile || '').trim(),
     pincode: String(source.pincode || '').replace(/\D/g, ''),
@@ -57,6 +59,7 @@ function buildPersistedOrderFields({ userId, draft, shippingAddress, billingAddr
   return {
     _id: id,
     user: userId,
+    customer: { name: shipping.fullName, email: shipping.email, phone: shipping.mobile },
     orderItems: snapshotOrderItems(draft.items),
     shippingAddress: shipping,
     shippingQuote: draft.shippingQuote || undefined,
