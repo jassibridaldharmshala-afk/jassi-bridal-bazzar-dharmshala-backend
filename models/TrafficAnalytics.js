@@ -11,7 +11,7 @@ function model(name, fields, indexes = []) {
 }
 
 const Configuration = model('TrafficConfiguration', {
-  ...scope, enabled: { type: Boolean, default: true }, consentRequired: { type: Boolean, default: true },
+  ...scope, enabled: { type: Boolean, default: true }, consentRequired: { type: Boolean, default: false },
   timezone: { type: String, default: 'Asia/Kolkata' }, sessionTimeoutMinutes: { type: Number, default: 30 },
   rawRetentionDays: { type: Number, default: 90 }, summaryRetentionDays: { type: Number, default: 365 },
   attributionDays: { type: Number, default: 7 }, excludedPaths: { type: [String], default: [] },

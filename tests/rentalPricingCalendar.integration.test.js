@@ -150,3 +150,91 @@ test('expired holds release calendar availability; calendar remains scoped to it
   const denied = await request(`/api/rentals/bookings/${booking._id}`, { token: stranger.token });
   assert.equal(denied.status, 404);
 });
+
+test('a whole month has a fixed database read budget, including a customer with an existing booking', async () => {
+  await hold();
+  const mongoose = require('mongoose'), original = mongoose.Query.prototype.exec;
+  let reads = [];
+  const spy = mock.method(mongoose.Query.prototype, 'exec', function (...args) {
+    reads.push(`${this.model.modelName}.${this.op}`);
+    return original.apply(this, args);
+  });
+  try {
+    const guest = await calendar();
+    assert.ok(guest.rows.length >= 28);
+    assert.equal(reads.length, 8, JSON.stringify(reads));
+    for (const name of ['RentalAsset.find', 'RentalReservation.find', 'RentalTask.find', 'RentalBooking.find', 'Product.find']) assert.equal(reads.filter(r => r === name).length, 1);
+    reads = [];
+    const own = await C.calendar(store, listing._id, { month: dates().pickupAt.slice(0, 7), days: 2 }, { customerUserId: customer.user._id });
+    assert.equal(reads.length, 10, JSON.stringify(reads));
+    assert.equal(own.rows.find(r => r.date === dates().pickupAt.slice(0, 10)).status, 'ALREADY_BOOKED');
+  } finally { spy.mock.restore(); }
+});
+
+test('batched calendar matches fresh quotes for every date with maintenance, overdue work, expired reservations and occupied slots', async () => {
+  await S.saveConfiguration(store, { revision: 1, mode: 'SALE_AND_RENTAL', policy: { ...A.DEFAULT_POLICY, slotCapacity: 1 } });
+  const extra = [];
+  for (let i = 2; i <= 4; i += 1) extra.push(await S.saveAsset(store, { productId: String(product._id), poolKey: 'bridal-piece', code: `BRIDAL-0${i}`, label: `Outfit ${i}` }));
+  const plan = dates(), start = new Date(plan.pickupAt), end = new Date(plan.returnDueAt);
+  await M.Reservation.create([
+    { storeId: store._id, assetId: extra[0]._id, blockedFrom: start, blockedUntil: end, kind: 'MAINTENANCE' },
+    { storeId: store._id, assetId: extra[1]._id, blockedFrom: start, blockedUntil: end, kind: 'BOOKING', expiresAt: new Date(Date.now() - 1000) },
+  ]);
+  await M.Task.create({ storeId: store._id, assetId: extra[2]._id, operationId: op(), type: 'REPAIR', dueAt: new Date(Date.now() - 1000) });
+  await M.Booking.create([
+    { storeId: store._id, number: op(), attemptId: op(), fingerprint: op(), status: 'CONFIRMED', schedule: { pickupAt: start, returnDueAt: end } },
+    { storeId: store._id, number: op(), attemptId: op(), fingerprint: op(), status: 'CONFIRMED', trial: { at: new Date(+end + A.DAY - A.HOUR), until: new Date(+end + A.DAY + A.HOUR), status: 'ATTENDED' } },
+    { storeId: store._id, number: op(), attemptId: op(), fingerprint: op(), status: 'HELD', expiresAt: new Date(Date.now() - 1000), schedule: { pickupAt: new Date(+end + 2 * A.DAY) } },
+    { storeId: store._id, number: op(), attemptId: op(), fingerprint: op(), status: 'CONFIRMED', trial: { at: new Date(+end + 3 * A.DAY) } },
+  ]);
+  const result = await calendar();
+  const X = require('../services/rentalStudioAlgorithms');
+  for (const row of result.rows) {
+    const returnDate = new Date(Date.parse(`${row.date}T12:00Z`) + 2 * A.DAY).toISOString().slice(0, 10);
+    const input = { pickupAt: X.localInstant(`${row.date}T10:00`, result.timezone).toISOString(), returnDueAt: X.localInstant(`${returnDate}T10:00`, result.timezone).toISOString(), items: result.items };
+    let fresh;
+    try { fresh = await S.publicQuote(store, input, { includeAvailability: true }); }
+    catch (error) {
+      assert.equal(row.status, error.errorCode === 'OUT_OF_STOCK' ? 'UNAVAILABLE' : 'UNBOOKABLE', row.date);
+      assert.equal(row.reason, error.message, row.date);
+      assert.deepEqual(row.availability, error.details?.availability, row.date);
+      continue;
+    }
+    assert.equal(row.status, 'AVAILABLE', row.date);
+    assert.deepEqual(row.availability, fresh.availability, row.date);
+    assert.equal(row.rentalPaise, fresh.quote.rentalPaise, row.date);
+    assert.equal(row.depositPaise, fresh.quote.depositPaise, row.date);
+    assert.equal(row.dueNowPaise, fresh.quote.dueNowPaise, row.date);
+  }
+  assert.equal(result.rows.find(r => r.date === plan.pickupAt.slice(0, 10)).status, 'UNAVAILABLE');
+  assert.ok(result.rows.some(r => r.status === 'AVAILABLE'));
+});
+
+test('full-set calendar cannot allocate one shared physical piece to two offers', async () => {
+  const second = await S.saveListing(store, { ...listing, _id: undefined, title: 'Another offer for the same outfit' });
+  const query = { month: dates().pickupAt.slice(0, 7), days: 2, items: [listing, second].map(l => ({ listingId: String(l._id), quantity: 1 })) };
+  const before = await C.calendarSet(store, query), day = dates().pickupAt.slice(0, 10);
+  const blocked = before.rows.find(r => r.date === day);
+  assert.equal(blocked.status, 'UNAVAILABLE');
+  const input = { ...dates(), items: query.items };
+  await assert.rejects(() => S.publicQuote(store, input, { includeAvailability: true }), error => {
+    assert.deepEqual(blocked.availability, error.details.availability); return error.errorCode === 'OUT_OF_STOCK';
+  });
+  await S.saveAsset(store, { productId: String(product._id), poolKey: 'bridal-piece', code: 'BRIDAL-02', label: 'Second outfit' });
+  const after = await C.calendarSet(store, query);
+  assert.equal(after.rows.find(r => r.date === day).status, 'AVAILABLE');
+});
+
+test('month boundaries include prior bookings and preparation/cleaning beyond the month', async () => {
+  const now = new Date(), first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  const month = first.toISOString().slice(0, 7), pickup = new Date(+first - A.DAY).toISOString().slice(0, 10);
+  const input = { pickupAt: `${pickup}T10:00:00+05:30`, returnDueAt: `${month}-02T10:00:00+05:30`, items: [{ listingId: String(listing._id), quantity: 1 }] };
+  const q = await S.publicQuote(store, input);
+  const booking = await S.hold(store, { ...input, attemptId: op(), acceptTerms: true, policyRevision: q.policyRevision, quoteFingerprint: q.quoteFingerprint, customer: {} }, customer.user);
+  const result = await C.calendar(store, listing._id, { month, days: 1 }, { customerUserId: customer.user._id });
+  assert.equal(result.rows[0].status, 'ALREADY_BOOKED');
+  assert.equal(result.rows[0].ownBooking.id, String(booking._id));
+  assert.equal(result.rows[1].status, 'UNAVAILABLE');
+  assert.equal(result.rows[2].status, 'UNAVAILABLE');
+  assert.equal(result.rows[3].status, 'AVAILABLE');
+});

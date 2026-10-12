@@ -5,6 +5,9 @@ const { ApiError } = require('../utils/apiError');
 const PHOTO_SOURCE_MAX_BYTES = 20 * 1024 * 1024;
 const PHOTO_BATCH_MAX_BYTES = 60 * 1024 * 1024;
 const PHOTO_PRIVATE_MAX_BYTES = 8 * 1024 * 1024;
+const PHOTO_RECIPE = 'webp-v2';
+const PHOTO_MASTER_MAX_BYTES = 512 * 1024;
+const PHOTO_MASTER_MAX_EDGE = 2000;
 const prepared = new WeakMap();
 const photoTypes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const invalid = message => new ApiError('UPLOAD_IMAGE_INVALID', message, { statusCode: 400 });
@@ -31,21 +34,15 @@ async function decodedImage(source) {
 async function optimizePhoto(source) {
   try {
     const { image, metadata } = await decodedImage(source);
-    let buffer = require('../utils/imageMetadata')[metadata.format](source);
-    // Apply orientation without another lossy generation. High bit-depth PNGs
-    // keep their original depth; rotation is encoded as lossless PNG.
-    if (metadata.orientation && metadata.orientation !== 1) {
-      let oriented = image.clone().rotate().keepIccProfile();
-      if (metadata.depth === 'ushort') oriented = oriented.toColourspace('rgb16').png({ compressionLevel: 9 });
-      else oriented = oriented.png({ compressionLevel: 6 });
-      buffer = await oriented.toBuffer();
-    } else if (metadata.format === 'png' && metadata.depth === 'uchar' && metadata.space === 'srgb' && !metadata.icc) {
-      const optimized = await sharp(buffer, { limitInputPixels: 50000000 }).png({ compressionLevel: 6, adaptiveFiltering: true, palette: false }).toBuffer();
-      if (optimized.length < buffer.length) buffer = optimized;
+    // Small, clean WebPs do not need another lossy generation. The master is
+    // itself bounded: no multi-megabyte original is persisted behind zoom.
+    if (metadata.format === 'webp' && source.length <= PHOTO_MASTER_MAX_BYTES &&
+      Math.max(metadata.width, metadata.height) <= PHOTO_MASTER_MAX_EDGE && !metadata.orientation &&
+      !metadata.exif && !metadata.xmp && !metadata.iptc && !metadata.icc) {
+      return { buffer: source, mimeType: 'image/webp', width: metadata.width, height: metadata.height, skipped: true, lossless: false };
     }
-    const output = await sharp(buffer).metadata();
-    return { buffer, mimeType: `image/${output.format}`, width: output.width, height: output.height,
-      skipped: buffer === source, lossless: true };
+    const { data, info } = await encodeDisplay(image, { edge: PHOTO_MASTER_MAX_EDGE, maxBytes: PHOTO_MASTER_MAX_BYTES, quality: 84, minimumQuality: 76 });
+    return { buffer: data, mimeType: 'image/webp', width: info.width, height: info.height, skipped: false, lossless: false };
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw invalid('This photo could not be decoded. Choose a valid JPG, PNG or WebP photo.');
@@ -54,8 +51,21 @@ async function optimizePhoto(source) {
 
 function compressPhotoBuffer(source) { return photoWork(() => optimizePhoto(source)); }
 
-// The URL saved as `url` remains the native master. These display derivatives
-// resize from that master, retain alpha and use lossless WebP encoding.
+async function encodeDisplay(image, { width, edge, maxBytes, quality, minimumQuality }) {
+  let limit = width || edge;
+  for (let attempt = 0; attempt < 9; attempt++) {
+    const resize = width ? { width: limit } : { width: limit, height: limit, fit: 'inside' };
+    const result = await image.clone().rotate().toColourspace('srgb').resize({ ...resize, withoutEnlargement: true })
+      .webp({ quality, alphaQuality: 100, effort: 4, smartSubsample: true }).toBuffer({ resolveWithObject: true });
+    if (result.data.length <= maxBytes) return result;
+    if (quality > minimumQuality) quality = Math.max(minimumQuality, quality - 4);
+    else limit = Math.max(64, Math.floor(limit * 0.82));
+  }
+  throw invalid('This photo is too detailed to optimize. Crop it or choose a smaller photo.');
+}
+
+// Thumbnail, listing/home cards and detail copies have separate byte budgets.
+// No crop or enlargement: preserve the complete outfit and transparent logos.
 function responsivePhotoVariants(file) {
   return photoWork(async () => {
     const source = file.buffer || await fs.readFile(file.path);
@@ -64,12 +74,21 @@ function responsivePhotoVariants(file) {
     const image = sharp(source, { limitInputPixels: 50000000, failOn: 'warning' });
     const metadata = prepared.has(file) ? await image.metadata() : (await decodedImage(source)).metadata;
     const nativeWidth = metadata.autoOrient?.width || ([5, 6, 7, 8].includes(metadata.orientation) ? metadata.height : metadata.width);
-    const widths = [...new Set([320, 640, 1200, 2000].map(width => Math.min(width, nativeWidth)))];
+    const profiles = [
+      { width: 160, maxBytes: 12 * 1024, quality: 78, minimumQuality: 70 },
+      { width: 320, maxBytes: 30 * 1024, quality: 80, minimumQuality: 72 },
+      { width: 640, maxBytes: 75 * 1024, quality: 82, minimumQuality: 74 },
+      { width: 960, maxBytes: 150 * 1024, quality: 82, minimumQuality: 76 },
+      { width: 1440, maxBytes: 280 * 1024, quality: 84, minimumQuality: 78 },
+    ];
     const rows = [];
-    for (const width of widths) {
-      const { data, info } = await image.clone().rotate().resize({ width, withoutEnlargement: true }).webp({ lossless: true, effort: 1 }).toBuffer({ resolveWithObject: true });
-      const row = { buffer: data, mimetype: 'image/webp', size: data.length, originalname: `display-${info.width}.webp`, width: info.width, height: info.height,
-        photo: { width: info.width, height: info.height, lossless: true, skipped: true } };
+    for (const profile of profiles) {
+      const width = Math.min(profile.width, nativeWidth);
+      if (rows.some(row => row.width === width)) continue;
+      const { data, info } = await encodeDisplay(image, { ...profile, width });
+      if (rows.some(row => row.width === info.width)) continue;
+      const row = { buffer: data, mimetype: 'image/webp', size: data.length, originalname: `display-${info.width}.webp`, width: info.width, height: info.height, displayWidth: profile.width,
+        photo: { width: info.width, height: info.height, lossless: false, skipped: true, recipe: PHOTO_RECIPE } };
       prepared.set(row, Promise.resolve(row));
       rows.push(row);
     }
@@ -77,7 +96,7 @@ function responsivePhotoVariants(file) {
   });
 }
 
-// AI gets a bounded analysis derivative; storage always uses optimizePhoto.
+// AI gets a separate copy with higher text quality than storefront displays.
 function prepareAnalysisPhotoBuffer(source, { maxBytes = 1024 * 1024, maxEdge = 1600 } = {}) {
   return photoWork(async () => {
     try {
@@ -112,7 +131,8 @@ async function preparePhotoFile(file) {
     const photo = await optimizePhoto(source);
     const result = { ...file, ...(photo.skipped && !file.buffer ? {} : { buffer: photo.buffer }),
       mimetype: photo.mimeType, size: photo.buffer.length,
-      photo: { width: photo.width, height: photo.height, skipped: photo.skipped, lossless: true } };
+      originalname: `${String(file.originalname || 'photo').replace(/\.[^.]+$/, '')}.webp`,
+      photo: { width: photo.width, height: photo.height, skipped: photo.skipped, lossless: photo.lossless, recipe: PHOTO_RECIPE } };
     prepared.set(result, Promise.resolve(result));
     return result;
   });
@@ -120,5 +140,5 @@ async function preparePhotoFile(file) {
   try { return await pending; } catch (error) { prepared.delete(file); throw error; }
 }
 
-module.exports = { PHOTO_SOURCE_MAX_BYTES, PHOTO_BATCH_MAX_BYTES, PHOTO_PRIVATE_MAX_BYTES,
+module.exports = { PHOTO_SOURCE_MAX_BYTES, PHOTO_BATCH_MAX_BYTES, PHOTO_PRIVATE_MAX_BYTES, PHOTO_MASTER_MAX_BYTES, PHOTO_MASTER_MAX_EDGE, PHOTO_RECIPE,
   compressPhotoBuffer, prepareAnalysisPhotoBuffer, preparePhotoFile, responsivePhotoVariants };

@@ -8,7 +8,7 @@ const { createAdmin, createCustomer } = require('./factories');
 const { createUploadSeller } = require('./photoUploadFixtures');
 test.before(startTestEnvironment); test.after(stopTestEnvironment); test.beforeEach(resetDatabase);
 
-test('public photos, mixed evidence and grouped drafts accept originals over 3 MB and retain every pixel', async t => {
+test('public photos, evidence and grouped drafts accept large sources but save bounded WebP', async t => {
   const admin = await createAdmin(), customer = await createCustomer(), seller = await createUploadSeller();
   const pixels = Buffer.alloc(1200 * 1000 * 3); let seed = 71;
   for (let i = 0; i < pixels.length; i++) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; pixels[i] = seed >>> 24; }
@@ -36,9 +36,9 @@ test('public photos, mixed evidence and grouped drafts accept originals over 3 M
     const download = await fetch(new URL(url, getBaseUrl()), privateFile ? { headers: { Authorization: 'Bearer ' + route.token } } : {});
     assert.equal(download.status, 200); const bytes = Buffer.from(await download.arrayBuffer());
     assert.ok(bytes.length <= source.length, route.path);
-    assert.equal((await sharp(bytes).metadata()).format, 'png');
-    assert.deepEqual(await sharp(bytes).raw().toBuffer(), pixels, route.path);
-    if (!route.draft) { assert.equal(file.mimeType, 'image/png'); assert.equal(file.sizeBytes, bytes.length); }
+    assert.ok(bytes.length <= 512 * 1024, route.path);
+    assert.equal((await sharp(bytes).metadata()).format, 'webp');
+    if (!route.draft) { assert.equal(file.mimeType, 'image/webp'); assert.equal(file.sizeBytes, bytes.length); }
     const downloaded = await fetch(new URL(url, getBaseUrl()), privateFile ? { headers: { Authorization: 'Bearer ' + route.token } } : {});
     assert.equal(downloaded.status, 200); assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), bytes);
   }

@@ -85,7 +85,7 @@ async function persist(file, video, identity) {
   return (await persistGeneratedFile({ path: file, mimetype: video ? 'video/mp4' : 'image/jpeg', originalname: video ? 'product-reel.mp4' : 'product-photo.jpg' }, identity, { video, responsive: false, folder: 'social-studio' })).url;
 }
 async function prepare(post, video = false) {
-  const recipe = ['social-render-v4-lossless-photo', storageFingerprint(), process.env.PUBLIC_API_URL || '', post.images.slice(0, 6), ...(video ? [post.productName || '', post.productPrice ?? null] : [])];
+  const recipe = [video ? 'social-render-v4-lossless-photo' : 'social-render-v5-webp-photo', storageFingerprint(), process.env.PUBLIC_API_URL || '', post.images.slice(0, 6), ...(video ? [post.productName || '', post.productPrice ?? null] : [])];
   const identity = { namespace: video ? 'social-video' : 'social-photos', ownerId: post._id, storeId: post.storeId, slot: 'recipe', recipe };
   const key = generatedUploadId(identity);
   const checkpoint = async (slot, url) => {

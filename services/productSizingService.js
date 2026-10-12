@@ -22,6 +22,12 @@ function normalizeProductSizing(payload = {}, categoryName = '') {
   const profile = inferProfile(next, categoryName);
   const mode = resolveMode(next, profile);
   next.sizingMode = mode;
+  if (isBangleProduct(next, categoryName)) {
+    next.sizes = getSelectableProductSizes(next, categoryName);
+    next.sizingMode = next.sizes.length ? 'sized' : 'free-size';
+    next.sizeChartProfile = 'free-size'; next.sizeChart = { unit: 'in', columns: [], rows: [] };
+    return next;
+  }
 
   if (mode === 'free-size') {
     next.sizes = [];
@@ -54,6 +60,7 @@ function normalizeProductSizing(payload = {}, categoryName = '') {
 }
 
 function validateProductSizing(payload = {}, categoryName = '') {
+  if (isBangleProduct(payload, categoryName)) return '';
   if (!Object.prototype.hasOwnProperty.call(payload, 'sizeChart')
     && !Object.prototype.hasOwnProperty.call(payload, 'sizingMode')
     && !Object.prototype.hasOwnProperty.call(payload, 'sizeChartProfile')) return '';
@@ -101,12 +108,14 @@ function resolveMode(product, profile = inferProfile(product)) {
 // Purchase validation must use the same category-aware rule as the product
 // response and storefront. Legacy records can still contain sizes in auto mode.
 function resolveProductSizingMode(product = {}, categoryName = '') {
+  if (isBangleProduct(product, categoryName) && [...(product.sizes || []), ...(product.variants || []).map(v => v.size)].some(size => size && !/^free[ -]?size$/i.test(size))) return 'sized';
   return resolveMode(product, inferProfile(product, categoryName));
 }
+function isBangleProduct(product = {}, categoryName = '') { return product.bridalStyle?.accessoryType === 'bangles' || /bangle|chudi|chooda/i.test([categoryName, product.categoryDefinitionKey, product.category?.definitionKey, product.category?.name, product.subCategory, product.name].filter(Boolean).join(' ')); }
 
 function getSelectableProductSizes(product = {}, categoryName = '') {
   if (resolveProductSizingMode(product, categoryName) !== 'sized') return [];
-  return uniqueStrings(product.sizes).filter((size) => !/^free\s*size$/i.test(size));
+  return uniqueStrings([...(product.sizes || []), ...(isBangleProduct(product, categoryName) ? (product.variants || []).filter(v => v.isActive !== false).map(v => v.size) : [])]).filter((size) => !/^free\s*size$/i.test(size));
 }
 
 function uniqueStrings(values) {
@@ -117,4 +126,4 @@ function humanize(value) {
   return String(value).replace(/([A-Z])/g, ' $1').trim().toLowerCase();
 }
 
-module.exports = { SIZE_CHART_PROFILES, inferProfile, normalizeProductSizing, validateProductSizing, resolveProductSizingMode, getSelectableProductSizes };
+module.exports = { SIZE_CHART_PROFILES, inferProfile, normalizeProductSizing, validateProductSizing, resolveProductSizingMode, getSelectableProductSizes, isBangleProduct };

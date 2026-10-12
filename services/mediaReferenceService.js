@@ -12,4 +12,35 @@ async function referenced(entry) {
   ]);
   return !!(product || draft || banner || category || reel || social);
 }
-module.exports = { referenced };
+// A removed master and every display copy form one family. Preserve all of it
+// when any copy is still used, including a saved order or restorable design.
+async function referencedFamily(assets) {
+  if (!assets?.length) return true;
+  const urls = [...new Set(assets.map(asset => asset.url).filter(Boolean))];
+  const checks = [
+    ['Settings', ['logoUrl', 'faviconUrl', 'socialShareImage']],
+    ['Store', ['logo', 'coverImage']],
+    ['Campaign', ['creative.image', 'creative.tabletImage', 'creative.mobileImage']],
+    ['Review', ['photos']],
+    ['Order', ['items.image', 'invoiceSeller.logoUrl']],
+  ];
+  for (const asset of assets) if (await referenced(asset)) return true;
+  for (const [model, paths] of checks) {
+    if (urls.length && await require('../models/' + model).exists({ $or: paths.map(path => ({ [path]: { $in: urls } })) })) return true;
+  }
+  if (urls.length && await require('../models/Rental').Booking.exists({ $or: [{ 'quote.items.image': { $in: urls } }, { 'acceptedQuote.items.image': { $in: urls } }] })) return true;
+  const wanted = new Set(urls);
+  const contains = value => typeof value === 'string' ? wanted.has(value) : Array.isArray(value) ? value.some(contains)
+    : value && typeof value === 'object' && !(value instanceof Date) ? Object.values(value).some(contains) : false;
+  for (const [model, fields] of [
+    ['WebsiteTheme', 'draftConfig publishedConfig scheduledConfig scheduledContent'],
+    ['WebsiteThemeVersion', 'config'], ['StorefrontDesignVersion', 'config'],
+    ['StoreContentVersion', 'content'], ['Store', 'storefrontDesign'],
+  ]) {
+    const cursor = require('../models/' + model).find({}).select(fields).lean().cursor();
+    try { for await (const record of cursor) if (contains(record)) return true; }
+    finally { await cursor.close(); }
+  }
+  return false;
+}
+module.exports = { referenced, referencedFamily };

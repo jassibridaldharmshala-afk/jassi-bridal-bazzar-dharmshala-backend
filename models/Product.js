@@ -7,6 +7,7 @@ const variantSchema = new mongoose.Schema({
   size: { type: String, default: '' },
   color: { type: String, default: '' },
   optionValues: { type: Map, of: String, default: {} },
+  bridalStyle: { type: mongoose.Schema.Types.Mixed, default: undefined },
   stock: { type: Number, default: 0, min: 0 },
   lowStockAlert: { type: Number, min: 0 },
   nonSellableStock: {
@@ -74,6 +75,10 @@ const productSchema = new mongoose.Schema({
   fabric: String,
   occasion: String,
   completeLookProductIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+  completeLookBlockedIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+  bridalStyle: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  lookDetails: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  bridalStyleAnalysis: { type: mongoose.Schema.Types.Mixed, default: undefined },
   variantGroupId: { type: mongoose.Schema.Types.ObjectId, ref: 'VariantGroup' },
   variantName: String,
   variantColor: String,

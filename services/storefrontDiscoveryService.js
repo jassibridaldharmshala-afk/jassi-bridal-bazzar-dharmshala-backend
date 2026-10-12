@@ -7,7 +7,7 @@ const { Configuration, Listing } = require('../models/Rental');
 const { andFilter, defaultStoreFilter } = require('./storeService');
 const { ApiError } = require('../utils/apiError');
 
-const CARD_FIELDS = '_id slug name category subCategory industry occasion colors tags price originalPrice salePrice saleStartAt saleEndAt stock variants sizingMode sizes images primaryImage rating numReviews commerceMode isNewArrival isBestSeller';
+const CARD_FIELDS = '_id slug name category subCategory categoryDefinitionKey attributeValues bridalStyle lookDetails industry occasion colors tags price originalPrice salePrice saleStartAt saleEndAt stock variants sizingMode sizes images primaryImage rating numReviews commerceMode isNewArrival isBestSeller';
 const FLAGS = 'occasionShoppingEnabled recentlyViewedEnabled completeLookEnabled';
 function publicFilter(req, extra = {}) {
   return andFilter({ $and: [{ isActive: true, isArchived: { $ne: true } }, { $or: [{ publishAt: { $exists: false } }, { publishAt: null }, { publishAt: { $lte: new Date() } }] }, req.commerceFilter || {}, extra] }, req.tenantFilter);
@@ -44,36 +44,20 @@ async function discovery(req) {
   const byId = new Map(rows.map(row => [String(row._id), row]));
   return { ...prefs, occasions: [...occasions.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)).slice(0, 24), recentlyViewed: recent.map(id => byId.get(id)).filter(Boolean) };
 }
-const ROLES = [
-  ['garment', /\b(saree|sarees|sari|saris|lehenga|lehengas|kurta|kurtas|kurti|kurtis|suit|suits|dress|dresses|outfit|outfits|clothing|apparel|ethnic wear)\b/i],
-  ['necklace', /\b(necklace|necklaces|pendant|pendants|neck ?set)\b/i],
-  ['earrings', /\b(earring|earrings|jhumka|jhumkas)\b/i],
-  ['bangles', /\b(bangle|bangles|bracelet|bracelets|chudi|chooda)\b/i],
-  ['bag', /\b(bag|bags|clutch|clutches|handbag|handbags|potli)\b/i],
-  ['footwear', /\b(footwear|sandal|sandals|heel|heels|shoe|shoes|juttis|jutti)\b/i],
-];
-const PAIRS = { garment: ['necklace', 'earrings', 'bangles', 'bag', 'footwear'], necklace: ['earrings', 'bangles'], earrings: ['necklace', 'bangles'], bangles: ['necklace', 'earrings'], bag: ['footwear'], footwear: ['bag'] };
-function role(product) {
-  for (const text of [product.category?.name, product.subCategory, product.name]) { const found = ROLES.find(([, pattern]) => pattern.test(String(text || ''))); if (found) return found[0]; }
-  return '';
-}
-function common(a, b) { const values = new Set(a.map(s => String(s).trim().toLowerCase()).filter(Boolean)); return b.some(s => values.has(String(s).trim().toLowerCase())); }
 function complementScore(source, candidate) {
-  if (!PAIRS[role(source)]?.includes(role(candidate))) return 0;
-  const occasion = common(tokens(source.occasion), tokens(candidate.occasion));
-  const colour = common(source.colors || [], candidate.colors || []);
-  const tags = common(source.tags || [], candidate.tags || []);
-  // Do not call random products a matching look when no context matches.
-  return occasion || colour || tags ? 20 + (occasion ? 12 : 0) + (colour ? 8 : 0) + (tags ? 4 : 0) : 0;
+  return require('./bridalLookAlgorithms').match(source, candidate)?.score || 0;
 }
 function saleAvailable(product) {
   const variants = Array.isArray(product.variants) ? product.variants : [];
   return variants.length ? variants.some(variant => variant.isActive !== false && Number(variant.stock) > 0) : Number(product.stock) > 0;
 }
 async function validateComplements(req, payload, sourceId, sourceStoreId) {
-  if (payload.completeLookProductIds === undefined) return;
-  const values = payload.completeLookProductIds;
-  if (!Array.isArray(values) || values.length > 8 || values.some(id => typeof id !== 'string' || !/^[a-f\d]{24}$/i.test(id)) || new Set(values.map(id => id.toLowerCase())).size !== values.length || values.some(id => id.toLowerCase() === String(sourceId || '').toLowerCase())) throw new ApiError('VALIDATION_ERROR', 'Choose up to eight distinct matching products, excluding this product.');
+  const provided = ['completeLookProductIds', 'completeLookBlockedIds'].filter(key => payload[key] !== undefined);
+  for (const field of provided) {
+    const values = payload[field], limit = field === 'completeLookBlockedIds' ? 40 : 8;
+    if (!Array.isArray(values) || values.length > limit || values.some(id => typeof id !== 'string' || !/^[a-f\d]{24}$/i.test(id)) || new Set(values.map(id => id.toLowerCase())).size !== values.length || values.some(id => id.toLowerCase() === String(sourceId || '').toLowerCase())) throw new ApiError('VALIDATION_ERROR', `Choose up to ${limit} distinct matching products, excluding this product.`);
+  }
+  const values = [...new Set(provided.flatMap(field => payload[field]))];
   if (!values.length) return;
   let tenant = Object.keys(req.tenantFilter || {}).length ? req.tenantFilter : { storeId: req.store?._id || null };
   if (sourceStoreId && String(sourceStoreId) !== String(req.store?._id || '')) {
@@ -84,6 +68,11 @@ async function validateComplements(req, payload, sourceId, sourceStoreId) {
   if (count !== values.length) throw new ApiError('VALIDATION_ERROR', 'Matching products must belong to this store.');
 }
 async function completeLook(req) {
+  return require('./bridalLookService').completeLook(req, { preferences, publicFilter, CARD_FIELDS });
+  /* Legacy contract is retained by bridalLookService: enabled, products, strategy. */
+}
+/*
+async function previousCompleteLook(req) {
   const prefs = await preferences(req);
   const key = req.params.slug;
   const source = await Product.findOne(publicFilter(req, mongoose.isValidObjectId(key) ? { _id: key } : { slug: key })).select(`${CARD_FIELDS} completeLookProductIds`).populate('category', 'name slug').maxTimeMS(4000).lean();
@@ -106,4 +95,5 @@ async function completeLook(req) {
     .filter(p => p.score > 0).sort((a, b) => b.score - a.score || String(a._id).localeCompare(String(b._id))).slice(0, 8).map(({ score, ...p }) => p);
   return { enabled: true, products, strategy: curated.length ? 'OWNER_CURATED' : 'CONTEXT_MATCHED' };
 }
+*/
 module.exports = { CARD_FIELDS, publicFilter, tokens, ids, preferences, discovery, completeLook, complementScore, validateComplements };

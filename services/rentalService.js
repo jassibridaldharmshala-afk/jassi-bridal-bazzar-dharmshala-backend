@@ -90,12 +90,12 @@ async function enabled(store, session) {
   return config;
 }
 function productFilter(store, productId) { return { $and: [{ _id: A.id(productId) }, store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }] }; }
-async function bindingsEligible(store, allocations, session) {
+async function bindingsEligible(store, allocations, session, snapshot) {
   const bindings = allocations.map(a => a.binding).filter(b => b?.productId);
   if (!bindings.length) return true; // Previously accepted, unbound legacy pieces.
   const ids = [...new Set(bindings.map(b => String(b.productId)))];
-  const rows = await Product.find({ $and: [store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }, { _id: { $in: ids } }, inventoryRules.publishedRentalFilter()] }).select('_id variants').session(session || null).lean();
-  const byId = new Map(rows.map(p => [String(p._id), p]));
+  const rows = snapshot ? [] : await Product.find({ $and: [store.isDefault ? defaultStoreFilter(store._id) : { storeId: store._id }, { _id: { $in: ids } }, inventoryRules.publishedRentalFilter()] }).select('_id variants').session(session || null).lean();
+  const byId = snapshot?.products || new Map(rows.map(p => [String(p._id), p]));
   return bindings.every(b => { const product = byId.get(String(b.productId)); return !!product && (!b.variantId || product.variants?.some(v => String(v._id) === b.variantId && v.isActive !== false)); });
 }
 async function saveListing(store, input, actorId) {
@@ -201,11 +201,11 @@ async function blockAsset(store, input) {
     return row.toObject();
   });
 }
-async function findCustomerDuplicate(store, lines, dates, customerUserId, session) {
+async function findCustomerDuplicate(store, lines, dates, customerUserId, session, snapshot) {
   if (!mongoose.isValidObjectId(customerUserId)) return;
   const productIds = lines.map(line => String(line.listing.productId));
   const listingIds = lines.map(line => String(line.listing._id));
-  const bookings = await M.Booking.find({ storeId: store._id, userId: customerUserId,
+  const bookings = snapshot ? snapshot.customerBookings.filter(b => +new Date(b.schedule.pickupAt) < +dates.returnDueAt && +new Date(b.schedule.returnDueAt) > +dates.pickupAt) : await M.Booking.find({ storeId: store._id, userId: customerUserId,
     status: { $in: ['HELD', 'CONFIRMED', 'PREPARING', 'READY', 'OUT'] },
     $or: [{ status: { $ne: 'HELD' } }, { expiresAt: { $gt: new Date() } }],
     'schedule.pickupAt': { $lt: dates.returnDueAt }, 'schedule.returnDueAt': { $gt: dates.pickupAt },
@@ -215,7 +215,7 @@ async function findCustomerDuplicate(store, lines, dates, customerUserId, sessio
   // Two offers can refer to the same outfit. Different fitting/variant
   // selections remain independent, while an alternate offer cannot bypass
   // the duplicate check. Retired offers still match their exact listing ID.
-  const previousListings = await M.Listing.find({ storeId: store._id,
+  const previousListings = snapshot ? snapshot.previousListings : await M.Listing.find({ storeId: store._id,
     _id: { $in: [...new Set(bookings.flatMap(b => b.quote.items.map(i => i.listingId)))] },
   }).select('_id productId variantId size colour').session(session || null).lean();
   const byId = new Map(previousListings.map(listing => [String(listing._id), listing]));
@@ -235,14 +235,16 @@ async function assertNoCustomerDuplicate(store, lines, dates, customerUserId, se
   if (match) throw new ApiError('RENTAL_ALREADY_BOOKED', `You've already booked ${match.listing.title} for these dates. Open your existing booking to view payment, pickup or cancellation options.`,
     { details: { bookingId: String(match.booking._id), bookingNumber: match.booking.number, bookingStatus: match.booking.status } });
 }
-async function quoteInternal(store, input, session, { existing = false, counter = false, policy: oldPolicy, ignoreBooking, customerUserId, includeAvailability = false } = {}) {
-  const configuration = await enabled(store, session);
+async function quoteInternal(store, input, session, { existing = false, counter = false, policy: oldPolicy, ignoreBooking, customerUserId, includeAvailability = false, calendarSnapshot: snapshot } = {}) {
+  if (snapshot && (session || existing || ignoreBooking || !includeAvailability)) throw new Error('Calendar snapshots are only for advisory calendar reads.');
+  const configuration = snapshot?.configuration || await enabled(store, session);
   const policy = A.validatePolicy(oldPolicy || { ...configuration.policy, advancePercent: configuration.policy.advancePercent || A.DEFAULT_POLICY.advancePercent }, { existing: !!oldPolicy });
-  const dates = A.schedule(input, policy, new Date(), { existing, allowImmediate: counter });
+  const now = snapshot?.now || new Date();
+  const dates = A.schedule(input, policy, now, { existing, allowImmediate: counter });
   if (!Array.isArray(input.items) || !input.items.length || input.items.length > 10) fail('Choose 1–10 rental listings.', 'VALIDATION_ERROR');
-  const lines = [];
+  const lines = snapshot?.lines || [];
   const seen = new Set();
-  for (const item of input.items) {
+  for (const item of snapshot ? [] : input.items) {
     const listingId = A.id(item.listingId);
     if (seen.has(listingId)) fail('Combine quantities for the same rental listing.', 'VALIDATION_ERROR');
     seen.add(listingId);
@@ -264,14 +266,14 @@ async function quoteInternal(store, input, session, { existing = false, counter 
     const capacity = []; let shortage = '';
     for (const requirement of line.listing.requirements) {
     const required = requirement.quantity * line.quantity;
-    const readyFilter = { $or: [{ status: 'READY' }, { status: 'OUT', returnDueAt: { $gt: new Date() } }, ...(ignoreBooking ? [{ status: 'OUT', currentBookingId: ignoreBooking }] : [])] };
-    const assets = await M.Asset.find({ storeId: store._id, ...inventoryRules.assetFilter(requirement, line.listing), ...(includeAvailability ? { status: { $nin: ['LOST', 'RETIRED'] } } : readyFilter) }).sort('code').limit(1000).session(session || null).lean();
-    const conflicting = await M.Reservation.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, active: true, ...(ignoreBooking ? { bookingId: { $ne: ignoreBooking } } : {}), blockedFrom: { $lt: dates.blockedUntil }, blockedUntil: { $gt: dates.blockedFrom }, $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] }).session(session || null).select('assetId kind').lean();
+    const readyFilter = { $or: [{ status: 'READY' }, { status: 'OUT', returnDueAt: { $gt: now } }, ...(ignoreBooking ? [{ status: 'OUT', currentBookingId: ignoreBooking }] : [])] };
+    const assets = snapshot ? snapshot.assetsByInventory.get(require('./rentalCalendarSnapshot').inventoryKey(requirement, line.listing)) : await M.Asset.find({ storeId: store._id, ...inventoryRules.assetFilter(requirement, line.listing), ...(includeAvailability ? { status: { $nin: ['LOST', 'RETIRED'] } } : readyFilter) }).sort('code').limit(1000).session(session || null).lean();
+    const conflicting = snapshot ? snapshot.conflicts(assets, dates) : await M.Reservation.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, active: true, ...(ignoreBooking ? { bookingId: { $ne: ignoreBooking } } : {}), blockedFrom: { $lt: dates.blockedUntil }, blockedUntil: { $gt: dates.blockedFrom }, $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }] }).session(session || null).select('assetId kind').lean();
     const excluded = new Set(conflicting.map(r => String(r.assetId)));
-    const overdueWork = await M.Task.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, status: { $in: require('./rentalStudioService').openTasks }, dueAt: { $lte: new Date() } }).session(session || null).select('assetId').lean();
+    const overdueWork = snapshot?.overdueWork || await M.Task.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, status: { $in: require('./rentalStudioService').openTasks }, dueAt: { $lte: now } }).session(session || null).select('assetId').lean();
     for (const task of overdueWork) excluded.add(String(task.assetId));
     const matching = assets.filter(a => !a.saleConversion && inventoryRules.matchesPiece(a, requirement, line.listing) && !used.has(String(a._id)));
-    const eligible = matching.filter(a => a.status === 'READY' || (a.status === 'OUT' && (+new Date(a.returnDueAt) > Date.now() || (ignoreBooking && String(a.currentBookingId) === String(ignoreBooking)))));
+    const eligible = matching.filter(a => a.status === 'READY' || (a.status === 'OUT' && (+new Date(a.returnDueAt) > +now || (ignoreBooking && String(a.currentBookingId) === String(ignoreBooking)))));
     const available = eligible.filter(a => !excluded.has(String(a._id)));
     const booked = new Set(conflicting.filter(r => r.kind === 'BOOKING').map(r => String(r.assetId)));
     capacity.push({ total: Math.floor(matching.length / requirement.quantity), available: Math.floor(available.length / requirement.quantity), booked: Math.ceil(matching.filter(a => booked.has(String(a._id))).length / requirement.quantity) });
@@ -286,21 +288,23 @@ async function quoteInternal(store, input, session, { existing = false, counter 
     availability.push({ listingId: String(line.listing._id), title: line.listing.title, requestedQuantity: line.quantity, totalQuantity, availableQuantity, bookedQuantity, blockedQuantity: Math.max(0, totalQuantity - availableQuantity - bookedQuantity) });
     if (shortage) unavailable(shortage);
   }
-  try { await assertSlotCapacity(store, dates, policy, session, ignoreBooking); }
+  try { await assertSlotCapacity(store, dates, policy, session, ignoreBooking, snapshot); }
   catch (error) { if (includeAvailability && error.errorCode === 'OUT_OF_STOCK') error.details = { availability }; throw error; }
-  if (!(await bindingsEligible(store, allocations, session))) unavailable('An allocated component product or variant is no longer published/available.');
+  if (!(await bindingsEligible(store, allocations, session, snapshot))) unavailable('An allocated component product or variant is no longer published/available.');
   if (policy.requireConditionPhotos && allocations.length > 50) fail('A booking with compulsory condition photos supports at most 50 physical pieces. Split the booking so every handover and return has evidence.', 'VALIDATION_ERROR');
   return { quote: price, schedule: dates, policy, policyRevision: configuration.revision, allocations, ...(includeAvailability ? { availability } : {}) };
 }
-async function assertSlotCapacity(store, dates, policy, session, ignoreBooking) {
+async function assertSlotCapacity(store, dates, policy, session, ignoreBooking, snapshot) {
   for (const field of ['pickupAt', 'returnDueAt']) {
-    const count = await M.Booking.countDocuments({ storeId: store._id, status: { $in: ['HELD', 'CONFIRMED', 'PREPARING', 'READY', 'OUT'] }, ...(ignoreBooking ? { _id: { $ne: ignoreBooking } } : {}), $and: [{ $or: [{ 'schedule.pickupAt': dates[field] }, { 'schedule.returnDueAt': dates[field] }, { 'trial.at': { $lte: dates[field] }, 'trial.until': { $gt: dates[field] }, 'trial.status': { $in: ['SCHEDULED', 'ATTENDED'] } }, { 'trial.at': dates[field], 'trial.status': { $exists: false } }] }, { $or: [{ status: { $ne: 'HELD' } }, { expiresAt: { $gt: new Date() } }] }] }).session(session || null);
+    const count = snapshot ? snapshot.slotBookings.filter(b => +new Date(b.schedule?.pickupAt) === +dates[field] || +new Date(b.schedule?.returnDueAt) === +dates[field] ||
+      (['SCHEDULED', 'ATTENDED'].includes(b.trial?.status) && +b.trial.at <= +dates[field] && +b.trial.until > +dates[field]) ||
+      (b.trial?.status === undefined && +b.trial?.at === +dates[field])).length : await M.Booking.countDocuments({ storeId: store._id, status: { $in: ['HELD', 'CONFIRMED', 'PREPARING', 'READY', 'OUT'] }, ...(ignoreBooking ? { _id: { $ne: ignoreBooking } } : {}), $and: [{ $or: [{ 'schedule.pickupAt': dates[field] }, { 'schedule.returnDueAt': dates[field] }, { 'trial.at': { $lte: dates[field] }, 'trial.until': { $gt: dates[field] }, 'trial.status': { $in: ['SCHEDULED', 'ATTENDED'] } }, { 'trial.at': dates[field], 'trial.status': { $exists: false } }] }, { $or: [{ status: { $ne: 'HELD' } }, { expiresAt: { $gt: new Date() } }] }] }).session(session || null);
     if (count >= policy.slotCapacity) fail('That pickup/return slot is full. Choose another time.', 'OUT_OF_STOCK');
   }
 }
-async function publicQuote(store, input, { counter = false, customerUserId, includeAvailability = false } = {}) {
+async function publicQuote(store, input, { counter = false, customerUserId, includeAvailability = false, calendarSnapshot } = {}) {
   assertStoreCanAcceptOrders(store, { rental: true });
-  const data = await quoteInternal(store, input, null, { counter, customerUserId, includeAvailability });
+  const data = await quoteInternal(store, input, null, { counter, customerUserId, includeAvailability, calendarSnapshot });
   return { quote: data.quote, quoteFingerprint: A.quoteFingerprint(store._id, data), schedule: data.schedule, ...(includeAvailability ? { availability: data.availability } : {}), terms: data.policy.terms, policyRevision: data.policyRevision, timezone: data.policy.timezone, policySummary: { graceHours: data.policy.graceHours, lateFeePerDayPaise: data.policy.lateFeePerDayPaise, cancellationRules: data.policy.cancellationRules, preparationHours: data.policy.preparationHours, cleaningHours: data.policy.cleaningHours, advanceMode: data.policy.advanceMode, advancePercent: data.policy.advancePercent, advanceAmountPaise: data.policy.advanceAmountPaise, depositTiming: data.policy.depositTiming, noShowGraceHours: data.policy.noShowGraceHours, noShowRetainPercent: data.policy.noShowRetainPercent, earlyReturnPolicy: data.policy.earlyReturnPolicy, requireConditionPhotos: data.policy.requireConditionPhotos, requireCustomerAcknowledgement: data.policy.requireCustomerAcknowledgement } };
 }
 async function enqueue(booking, event, session, token, { audiences = ['OWNER', 'CUSTOMER'] } = {}) {

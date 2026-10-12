@@ -76,7 +76,7 @@ test('complete look prefers owner order and hides unpublished, foreign and unava
 
 test('algorithm requires complementary type plus context and recognizes generic names through category', async () => {
   const category = await Category.create({ storeId: store._id, name: 'Bangles', slug: 'bangles' });
-  const bangle = await createProduct({ storeId: store._id, category: category._id, name: 'Design 101', occasion: 'Wedding', colors: [] });
+  const bangle = await createProduct({ storeId: store._id, category: category._id, name: 'Design 101', occasion: 'Wedding', colors: ['Gold'], sizes: ['2.4', '2.6'], sizingMode: 'sized' });
   const sameType = await createProduct({ storeId: store._id, name: 'Other lehenga', occasion: 'Wedding', colors: ['Gold'] });
   const unrelated = await createProduct({ storeId: store._id, name: 'Silver necklace', occasion: 'Office', colors: ['Silver'] });
   const result = await request(url(`/products/${source.slug}/complete-look`));

@@ -11,6 +11,6 @@ exports.discovery = asyncHandler(async (req, res) => {
 exports.completeLook = asyncHandler(async (req, res) => {
   req.commerceFilter = await require('../services/catalogCommerceService').publicFilter(req);
   const data = await service.completeLook(req);
-  const rows = await require('../services/rentalProductPreview').enrich(data.products.map(p => ({ ...homeProduct(p, req), discoveryPurchase: p.discoveryPurchase, ...(p.rentalPreview ? { rentalPreview: p.rentalPreview } : {}) })), req);
+  const rows = data.products.map(p => ({ ...homeProduct(p, req), look: p.look, discoveryPurchase: p.discoveryPurchase, ...(p.rentalPreview ? { rentalPreview: p.rentalPreview } : {}) }));
   res.set('Cache-Control', 'no-store').json({ ...data, products: rows });
 });

@@ -3,7 +3,7 @@ const r2 = require('./r2Upload');
 const cloud = require('./cloudinaryUpload');
 const { persistLocal, runUploadRequest } = require('./uploadRetryService');
 const crypto = require('node:crypto');
-const { preparePhotoFile, responsivePhotoVariants } = require('./photoCompressionService');
+const { preparePhotoFile, responsivePhotoVariants, PHOTO_RECIPE } = require('./photoCompressionService');
 
 // Bound encoded photo buffers and provider writes across concurrent requests,
 // while Sharp's separate global queue bounds decoded raster memory.
@@ -45,13 +45,14 @@ async function storeFiles(req, context, { folder = req.query?.folder || 'product
         const variants = await responsivePhotoVariants(file);
         await context.progress?.({ phase: 'storing-displays', photoIndex });
         for (const variant of variants) {
-          const derivativeId = crypto.createHash('sha256').update(`${options.uploadId || saved.publicId}:display-v1:${variant.width}`).digest('hex');
+          const derivativeId = crypto.createHash('sha256').update(`${options.uploadId || saved.publicId}:${PHOTO_RECIPE}:${variant.width}`).digest('hex');
           const derivativeOptions = { ...options, folder, uploadId: derivativeId };
           const display = provider === 'r2' ? await r2.uploadImageToR2(variant, derivativeOptions)
             : provider === 'cloudinary' ? await cloud.uploadImage(variant, derivativeOptions) : await persistLocal(variant, derivativeOptions);
-          metadata.variants.push({ ...display, provider, width: variant.width, height: variant.height, mimeType: variant.mimetype, sizeBytes: variant.size });
+          metadata.variants.push({ ...display, provider, width: variant.width, height: variant.height, displayWidth: variant.displayWidth, mimeType: variant.mimetype, sizeBytes: variant.size });
         }
       }
+      await require('./imageAssetService').registerImageAsset(metadata, { storeId: req.store?._id });
       return metadata;
     }))));
     const failure = chunk.find(item => item.status === 'rejected');

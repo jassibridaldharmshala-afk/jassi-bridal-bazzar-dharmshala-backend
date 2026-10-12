@@ -17,39 +17,43 @@ function texturedPixels(width, height, alpha = false) {
   return { pixels, raw: { width, height, channels } };
 }
 async function samePixels(source, output) {
-  const original = await sharp(source).raw().toBuffer({ resolveWithObject: true });
-  const stored = await sharp(output).raw().toBuffer({ resolveWithObject: true });
-  assert.deepEqual(stored.info, original.info);
-  assert.deepEqual(stored.data, original.data);
+  const original = await sharp(source).rotate().metadata();
+  const stored = await sharp(output).metadata();
+  assert.equal(stored.format, 'webp');
+  assert.ok(output.length <= 512 * 1024);
+  const oriented = original.autoOrient || { width: original.width, height: original.height };
+  assert.ok(Math.abs(stored.width / stored.height - oriented.width / oriented.height) < 0.02);
 }
 
-test('photos over 2 MB retain every pixel and native resolution, with no 100 KB cap', async () => {
+test('multi-megabyte sources save a bounded WebP master without cropping', async () => {
   const { pixels, raw } = texturedPixels(1800, 1000);
   const png = await sharp(pixels, { raw }).png({ compressionLevel: 0 }).toBuffer();
   assert.ok(png.length > 2 * 1024 * 1024);
   const output = await compressPhotoBuffer(png);
-  assert.ok(output.buffer.length > 100000); assert.ok(output.buffer.length <= png.length);
-  assert.equal(output.mimeType, 'image/png'); assert.equal(output.lossless, true);
-  assert.equal(output.width, 1800); assert.equal(output.height, 1000);
+  assert.ok(output.buffer.length <= 512 * 1024); assert.ok(output.buffer.length < png.length / 3);
+  assert.equal(output.mimeType, 'image/webp'); assert.equal(output.lossless, false);
+  assert.ok(output.width <= 2000); assert.ok(output.height <= 2000);
   await samePixels(png, output.buffer);
 });
 
-test('lossless PNG optimization reduces inefficient files and preserves alpha including hidden RGB', async () => {
+test('compressed PNG photos preserve transparency', async () => {
   const { pixels, raw } = texturedPixels(600, 400, true);
   const png = await sharp(pixels, { raw }).png({ compressionLevel: 0 }).toBuffer();
   const output = await compressPhotoBuffer(png);
   assert.ok(output.buffer.length < png.length);
   assert.equal((await sharp(output.buffer).metadata()).hasAlpha, true);
+  const rgba = await sharp(output.buffer).ensureAlpha().raw().toBuffer();
+  for (let i = 3; i < pixels.length; i += 4) assert.equal(rgba[i], pixels[i]);
   await samePixels(png, output.buffer);
 });
 
-test('JPEG privacy metadata is stripped, orientation is applied losslessly and ICC survives', async () => {
+test('orientation is applied and private metadata is stripped while colours convert to sRGB', async () => {
   const { pixels, raw } = texturedPixels(280, 170);
   const jpg = await sharp(pixels, { raw }).jpeg({ quality: 98 }).withMetadata({ orientation: 6 }).toBuffer();
   const result = await compressPhotoBuffer(jpg), metadata = await sharp(result.buffer).metadata();
-  assert.equal(result.mimeType, 'image/png'); assert.equal(metadata.width, 170); assert.equal(metadata.height, 280);
+  assert.equal(result.mimeType, 'image/webp'); assert.equal(metadata.width, 170); assert.equal(metadata.height, 280);
   assert.equal(metadata.orientation, undefined); assert.equal(metadata.exif, undefined);
-  assert.ok(metadata.icc); assert.deepEqual(metadata.icc, (await sharp(jpg).metadata()).icc);
+  assert.equal(metadata.icc, undefined);
   const expected = await sharp(jpg).rotate().keepIccProfile().png().toBuffer();
   await samePixels(expected, result.buffer);
   const webp = await sharp(pixels, { raw }).webp({ quality: 98 }).toBuffer();
@@ -87,7 +91,7 @@ test('corrupt, unsupported, animated and oversized images fail before persistenc
   await assert.rejects(compressPhotoBuffer(huge), /could not be decoded/);
 });
 
-test('generated local assets optimize losslessly and leave source files untouched', async () => {
+test('generated local assets compress and leave source files untouched', async () => {
   const { pixels, raw } = texturedPixels(700, 700);
   const original = await sharp(pixels, { raw }).png({ compressionLevel: 0 }).toBuffer();
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'photo-compress-'));
@@ -99,14 +103,14 @@ test('generated local assets optimize losslessly and leave source files untouche
     assert.ok(bytes.length <= original.length);
     await samePixels(original, bytes);
     assert.deepEqual(await fs.readFile(source), original);
-    assert.equal(stored.mimeType, 'image/png'); assert.equal(stored.sizeBytes, bytes.length);
+    assert.equal(stored.mimeType, 'image/webp'); assert.equal(stored.sizeBytes, bytes.length);
   } finally {
     if (stored) await fs.unlink(path.join(__dirname, '../uploads', stored.publicId)).catch(() => {});
     await fs.unlink(source).catch(() => {}); await fs.rmdir(directory).catch(() => {});
   }
 });
 
-test('R2 and Cloudinary receive lossless bytes with the correct MIME, extension and receipt', async t => {
+test('R2 and Cloudinary receive compressed WebP with matching MIME, extension and receipt', async t => {
   const keys = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME', 'R2_PUBLIC_URL', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'];
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   t.after(() => keys.forEach(key => previous[key] === undefined ? delete process.env[key] : process.env[key] = previous[key]));
@@ -117,12 +121,12 @@ test('R2 and Cloudinary receive lossless bytes with the correct MIME, extension 
   let r2Calls = 0, cloudCalls = 0;
   t.mock.method(require('../services/r2Upload').getR2Client(), 'send', async command => {
     r2Calls++; assert.ok(command.input.Body.length <= source.length);
-    assert.equal(command.input.ContentType, 'image/png'); assert.match(command.input.Key, /\.png$/);
+    assert.equal(command.input.ContentType, 'image/webp'); assert.match(command.input.Key, /\.webp$/);
     await samePixels(source, command.input.Body); return {};
   });
   t.mock.method(global, 'fetch', async (_url, options) => {
     cloudCalls++; const blob = options.body.get('file');
-    assert.ok(blob.size <= source.length); assert.equal(blob.type, 'image/png');
+    assert.ok(blob.size <= source.length); assert.equal(blob.type, 'image/webp');
     await samePixels(source, Buffer.from(await blob.arrayBuffer()));
     return { ok: true, json: async () => ({ secure_url: 'https://test.invalid/generated.png', public_id: 'generated' }) };
   });

@@ -11,7 +11,8 @@ const { errorHandler } = require('../middleware/errorMiddleware');
 test('shopping bag persistence, selections and stock checks', { timeout: 30000 }, async t => {
   let mongo, server;
   try {
-    mongo = await MongoMemoryServer.create({ binary: { version: '7.0.14', systemBinary: process.platform === 'win32' ? path.resolve(__dirname, '../node_modules/.cache/mongodb-binaries/mongod-x64-win32-7.0.14.exe') : undefined } });
+    const cached = path.resolve(__dirname, '../node_modules/.cache/mongodb-binaries/mongod-x64-win32-7.0.14.exe');
+    mongo = await MongoMemoryServer.create({ binary: require('node:fs').existsSync(cached) ? { version: '7.0.14', systemBinary: cached } : {} });
     await mongoose.connect(mongo.getUri(), { dbName: 'isolated_bag_test' });
     const [owner, other] = await User.create([{ phone: '9000000051' }, { phone: '9000000052' }]);
     const product = await Product.create({ name: 'Rose kurti', slug: 'bag-rose', price: 899, originalPrice: 1599, stock: 12, sizingMode: 'sized', sizes: ['S', 'M', 'L'], colors: ['Rose'], variants: [{ size: 'S', color: 'Rose', stock: 5, price: 999 }, { size: 'M', color: 'Rose', stock: 7, price: 1199 }, { size: 'L', color: 'Rose', stock: 0 }] });

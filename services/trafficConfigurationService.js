@@ -1,10 +1,14 @@
 const { Configuration, Event, Session, Slice, Bucket, Visitor } = require('../models/TrafficAnalytics');
 const { ApiError } = require('../utils/apiError');
 const { DAY, cleanPath } = require('./trafficAlgorithms');
-const DEFAULTS = Object.freeze({ enabled: true, consentRequired: true, timezone: 'Asia/Kolkata', sessionTimeoutMinutes: 30, rawRetentionDays: 90, summaryRetentionDays: 365, attributionDays: 7, excludedPaths: [], excludedReferrers: [], excludeLocalhost: true, ga4MeasurementId: '', ga4Enabled: false, revision: 1, privacyGeneration: 1, whatsappDigest: { enabled: false, frequency: 'DAILY', recipient: '', consent: false, templateName: '', language: 'en' } });
+const DEFAULTS = Object.freeze({ enabled: true, consentRequired: false, timezone: 'Asia/Kolkata', sessionTimeoutMinutes: 30, rawRetentionDays: 90, summaryRetentionDays: 365, attributionDays: 7, excludedPaths: [], excludedReferrers: [], excludeLocalhost: true, ga4MeasurementId: '', ga4Enabled: false, revision: 1, privacyGeneration: 1, whatsappDigest: { enabled: false, frequency: 'DAILY', recipient: '', consent: false, templateName: '', language: 'en' } });
 async function configuration(store) {
   if (!store?._id) throw new ApiError('VALIDATION_ERROR', 'Select a store for traffic analytics.');
-  return { ...DEFAULTS, timezone: store.timezone || DEFAULTS.timezone, ...await Configuration.findOne({ storeId: store._id }).lean() };
+  const config = { ...DEFAULTS, timezone: store.timezone || DEFAULTS.timezone, ...await Configuration.findOne({ storeId: store._id }).lean() };
+  // Built-in visitor statistics run in the background. Old consent-prompt
+  // defaults must not disable basic counting after the storefront UI changes.
+  // Optional third-party analytics still require the visitor's explicit choice.
+  return { ...config, consentRequired: config.ga4Enabled === true };
 }
 function validateConfiguration(body, current) {
   const result = {};
@@ -25,7 +29,9 @@ function validateConfiguration(body, current) {
     if (result.ga4MeasurementId && !/^G-[A-Z0-9]{4,20}$/.test(result.ga4MeasurementId)) throw new ApiError('VALIDATION_ERROR', 'Enter a valid GA4 measurement ID.');
   }
   if ((result.ga4Enabled ?? current.ga4Enabled) && !(result.ga4MeasurementId ?? current.ga4MeasurementId)) throw new ApiError('VALIDATION_ERROR', 'Add your store GA4 measurement ID before enabling GA4.');
-  if ((result.ga4Enabled ?? current.ga4Enabled) && !(result.consentRequired ?? current.consentRequired)) throw new ApiError('VALIDATION_ERROR', 'GA4 requires explicit analytics consent. Enable the consent prompt.');
+  const ga4Enabled = result.ga4Enabled ?? current.ga4Enabled;
+  if (ga4Enabled && body.consentRequired === false) throw new ApiError('VALIDATION_ERROR', 'GA4 requires explicit analytics consent in Privacy Policy.');
+  result.consentRequired = ga4Enabled;
   for (const key of ['excludedPaths', 'excludedReferrers']) {
     if (body[key] !== undefined) {
       if (!Array.isArray(body[key]) || body[key].length > 30 || body[key].some(v => typeof v !== 'string' || v.length > 160)) throw new ApiError('VALIDATION_ERROR', `Use at most 30 ${key}.`);

@@ -75,7 +75,7 @@ exports.fill = asyncHandler(async (req, res) => {
     if (!automaticSizing(configuration.structure)) { delete suggestion.sizes; delete suggestion.sizingMode; delete suggestion.sizeChart; }
     // Only listing data is returned. No credentials, model configuration or
     // provider responses are included, and nothing is saved or published here.
-    const fields = ['name', 'category', 'subCategory', 'description', 'shortDescription', 'colors', 'tags', 'highlights', 'fabric', 'occasion', 'careInstructions', 'sizes', 'sizingMode', 'price', 'originalPrice', 'attributeValues'];
+    const fields = ['name', 'category', 'subCategory', 'description', 'shortDescription', 'colors', 'tags', 'highlights', 'fabric', 'occasion', 'careInstructions', 'sizes', 'sizingMode', 'price', 'originalPrice', 'attributeValues', 'bridalStyle'];
     const data = Object.fromEntries(fields.filter(field => suggestion[field] !== undefined).map(field => [field, suggestion[field]]));
     const rentalNotes = require('../services/rentalOwnerNotes').extract(req.body.notes);
     if (Object.keys(rentalNotes.value).length) data.rentalPricing = rentalNotes.value;

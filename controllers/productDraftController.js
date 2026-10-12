@@ -28,6 +28,7 @@ const { resolveDraftPhotoGroups } = require('../utils/draftPhotoGroups');
 const DRAFT_AUDIT_FIELDS = [
   'name', 'sku', 'category', 'sellingPrice', 'originalPrice', 'stock', 'status',
   'revision', 'publishedProductId', 'sourceType', 'archivedAt',
+  'bridalStyle', 'bridalStyleAnalysis', 'lookDetails', 'completeLookProductIds', 'completeLookBlockedIds',
 ];
 const MAX_DRAFT_PAGE_SIZE = 60;
 
@@ -395,7 +396,7 @@ exports.publishSelected = asyncHandler(async (req, res) => {
       continue;
     }
     const prepared = await applyProductStructure(buildProductPayloadFromDraft(draft));
-    try { await require('../services/storefrontDiscoveryService').validateComplements(req, { completeLookProductIds: (draft.completeLookProductIds || []).map(String) }, null, draft.storeId); }
+    try { await require('../services/storefrontDiscoveryService').validateComplements(req, { completeLookProductIds: (draft.completeLookProductIds || []).map(String), completeLookBlockedIds: (draft.completeLookBlockedIds || []).map(String) }, null, draft.storeId); }
     catch (error) { results.push({ id, name: draft.name || '', status: 'failed', message: error.message }); continue; }
     payloads.set(id, prepared);
     const validationMessage = validatePublishDraft(draft, prepared) || await validateCommercialDuplicates(draft, prepared);
@@ -458,7 +459,7 @@ async function publishPreparedDraft(draft, prepared, { userId } = {}) {
     draft.revision = claimed.revision;
     try {
     const productPayload = prepared || await prepareImportedDraft(draft);
-    await require('../services/storefrontDiscoveryService').validateComplements({}, { completeLookProductIds: (productPayload.completeLookProductIds || []).map(String) }, null, draft.storeId);
+    await require('../services/storefrontDiscoveryService').validateComplements({}, { completeLookProductIds: (productPayload.completeLookProductIds || []).map(String), completeLookBlockedIds: (productPayload.completeLookBlockedIds || []).map(String) }, null, draft.storeId);
     if (draft.sourceType && !productPayload.sku) productPayload.sku = `IMPORT-${String(draft._id).slice(-10).toUpperCase()}`;
     productPayload.slug = await ensureUniqueProductSlug(productPayload.slug || productPayload.name, draft._id, draft.storeId);
     if (productPayload.sku && !prepared) productPayload.sku = await ensureUniqueSku(productPayload.sku, draft._id, draft.storeId);
@@ -578,7 +579,7 @@ function escapeRegex(value) {
 }
 
 function normalizeDraftPayload(body = {}) {
-  const payload = { ...body };
+  const payload = normalizeProductPayload({ ...body });
   delete payload.publishingToken;
   delete payload.uploadOperationId;
   if (typeof payload.images === 'string') {
@@ -691,6 +692,10 @@ function buildProductPayloadFromDraft(draft) {
     fabric: data.fabric || '',
     occasion: data.occasion || '',
     completeLookProductIds: data.completeLookProductIds || [],
+    completeLookBlockedIds: data.completeLookBlockedIds || [],
+    bridalStyle: data.bridalStyle,
+    lookDetails: data.lookDetails,
+    bridalStyleAnalysis: data.bridalStyleAnalysis,
     stock: Number(data.stock || 0),
     lowStockAlert: Number(data.lowStockAlert ?? 5),
     reorderQuantity: Number(data.reorderQuantity || 0),

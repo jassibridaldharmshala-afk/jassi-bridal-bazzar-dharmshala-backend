@@ -16,7 +16,7 @@ const { logAudit } = require('../services/auditService');
 const { auditSnapshot } = require('../utils/auditData');
 const PRODUCT_AUDIT_FIELDS = ['name', 'sku', 'slug', 'brand', 'category', 'subCategory', 'price', 'originalPrice', 'salePrice', 'costPrice', 'gstRate', 'hsnCode', 'barcode', 'stock', 'lowStockAlert', 'reorderQuantity', 'shippingWeightKg', 'packageDimensions', 'countryOfOrigin', 'manufacturerDetails', 'warranty', 'supplierName', 'supplierSku', 'restockAt', 'publishAt', 'saleStartAt', 'saleEndAt', 'isActive', 'isArchived', 'isFeatured', 'isBestSeller', 'isNewArrival', 'showOnHomepage', 'showInTrending', 'showInFestive', 'sizes', 'colors', 'fabric', 'occasion', 'description', 'shortDescription', 'variants', 'variantGroupId', 'sizingMode', 'sizeChartProfile', 'sizeChart', 'sizeFitNotes', 'attributeValues', 'specifications', 'highlights', 'careInstructions', 'returnPolicy', 'returnable', 'exchangeable', 'returnWindowDays', 'tags'];
 const { analyzeQuickAddImage, getQuickAddVisionStatus } = require('../services/quickAddVision.service');
-PRODUCT_AUDIT_FIELDS.push('completeLookProductIds', 'commerceMode');
+PRODUCT_AUDIT_FIELDS.push('completeLookProductIds', 'completeLookBlockedIds', 'bridalStyle', 'lookDetails', 'bridalStyleAnalysis', 'commerceMode');
 const { wantsPagination, readPagination, buildPaginatedResponse } = require('../utils/validators');
 const { normalizeProductSizing, validateProductSizing } = require('../services/productSizingService');
 const { applyEffectivePricing } = require('../services/productPricingService');
@@ -82,7 +82,7 @@ function normalizeProductResponse(product, req) {
   const isPrivateCatalog = baseUrl.startsWith('/api/admin/products') || baseUrl.startsWith('/api/seller');
   const data = normalizeProductImages(isPrivateCatalog ? product : applyEffectivePricing(product), req);
   if (data.attributeValues instanceof Map) data.attributeValues = Object.fromEntries(data.attributeValues);
-  if (!isPrivateCatalog) delete data.completeLookProductIds;
+  if (!isPrivateCatalog) { delete data.completeLookProductIds; delete data.completeLookBlockedIds; delete data.bridalStyleAnalysis; }
   if (!isPrivateCatalog) data.purchaseEnabled = data.commerceMode !== 'RENTAL_ONLY' && req?.store?.catalogStructure?.commerce?.mode !== 'RENTAL_ONLY' && req?.store?.salesEnabled !== false;
   const sized = normalizeProductSizing(data, data.category?.name || '');
   return isPrivateCatalog ? sized : publicProduct(sized);
@@ -595,10 +595,21 @@ exports.updateProduct = asyncHandler(async (req, res) => {
   const existingProduct = await Product.findOne(catalogQuery(req, { _id: req.params.id }));
   if (!existingProduct) return res.status(404).json({ message: 'Product not found' });
   assertStoreOwned(existingProduct, req);
+  const expectedUpdatedAt = req.body?.expectedUpdatedAt;
+  if (expectedUpdatedAt !== undefined && (!Number.isFinite(Date.parse(expectedUpdatedAt)) || +new Date(expectedUpdatedAt) !== +existingProduct.updatedAt)) throw new ApiError('PRODUCT_CHANGED', 'This product changed after analysis. Reload and review its latest details.', { statusCode: 409 });
   if (['RENTAL_ONLY', 'SALE_AND_RENTAL'].includes(req.body?.commerceMode) && !req.body?.rentalPricing && !(await require('../models/Rental').Listing.exists({ storeId: existingProduct.storeId || req.store?._id, productId: existingProduct._id }))) {
     throw new ApiError('VALIDATION_ERROR', 'Enter rental pricing and physical pieces when enabling rental for this product.');
   }
   await require('../services/storefrontDiscoveryService').validateComplements(req, req.body || {}, existingProduct._id, existingProduct.storeId);
+  const appearanceFields = ['bridalStyle', 'lookDetails', 'bridalStyleAnalysis', 'completeLookProductIds', 'completeLookBlockedIds'];
+  if (Object.keys(req.body || {}).some(key => appearanceFields.includes(key)) && Object.keys(req.body).every(key => appearanceFields.includes(key) || key === 'expectedUpdatedAt')) {
+    // Reviewed appearance edits do not rebuild legacy sizing or commercial data.
+    const changes = normalizeProductPayload(Object.fromEntries(appearanceFields.filter(key => req.body[key] !== undefined).map(key => [key, req.body[key]])));
+    const product = await Product.findOneAndUpdate(catalogQuery(req, { _id: existingProduct._id, ...(expectedUpdatedAt ? { updatedAt: new Date(expectedUpdatedAt) } : {}) }), { $set: changes }, { new: true, runValidators: true });
+    if (!product) throw new ApiError('PRODUCT_CHANGED', 'This product changed after analysis. Reload and review its latest details.', { statusCode: 409 });
+    logAudit({ req, action: 'PRODUCT_UPDATE', entityType: 'Product', entityId: product._id, storeId: product.storeId, before: auditSnapshot(existingProduct, PRODUCT_AUDIT_FIELDS), after: auditSnapshot(product, PRODUCT_AUDIT_FIELDS) });
+    return res.json({ ...normalizeProductResponse(product, req), rentalOffers: await require('../services/productRentalPricing').offers(product, req.store) });
+  }
   const expectedInventoryRevision = req.body?.inventoryRevision === undefined ? null : Number(req.body.inventoryRevision);
   if (expectedInventoryRevision !== null && (!Number.isSafeInteger(expectedInventoryRevision) || expectedInventoryRevision < 0)) return res.status(400).json({ message: 'Inventory revision must be a whole number of zero or more' });
   if (expectedInventoryRevision !== null && expectedInventoryRevision !== Number(existingProduct.inventoryRevision || 0)) {
@@ -634,7 +645,7 @@ exports.updateProduct = asyncHandler(async (req, res) => {
       ...(inventoryChanged ? { lastInventoryChangeAt: new Date(), lastInventoryChangedBy: req.user?._id } : {}),
     });
     const saved = await Product.findOneAndUpdate(
-      catalogQuery(req, withInventoryRevision({ _id: req.params.id }, currentRevision)),
+      catalogQuery(req, withInventoryRevision({ _id: req.params.id, ...(expectedUpdatedAt ? { updatedAt: new Date(expectedUpdatedAt) } : {}) }, currentRevision)),
       update,
       { new: true, runValidators: true, session },
     );

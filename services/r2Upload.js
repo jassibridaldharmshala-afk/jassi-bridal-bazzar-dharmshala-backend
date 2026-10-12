@@ -154,7 +154,7 @@ async function deleteImageFromR2(identifier) {
   await getR2Client().send(new DeleteObjectCommand({
     Bucket: process.env.R2_BUCKET_NAME,
     Key: objectKey,
-  }));
+  }), { abortSignal: AbortSignal.timeout(15000) });
   await require('./uploadRetryService').invalidateStoredUpload('r2', objectKey);
   return true;
 }
@@ -162,21 +162,21 @@ async function deleteImageFromR2(identifier) {
 function resolveObjectKey(identifier) {
   if (!identifier) return '';
   if (typeof identifier === 'object') {
-    return resolveObjectKey(identifier.publicId || identifier.url);
+    if (identifier.url) return resolveObjectKey(identifier.url);
+    return identifier.provider === 'r2' ? resolveObjectKey(identifier.publicId || identifier.storageKey) : '';
   }
 
   const value = String(identifier || '').trim();
   if (!value) return '';
-  if (!/^https?:\/\//i.test(value)) return value;
+  if (!/^https?:\/\//i.test(value)) return /^(?:products|categories|banners|product-videos|reel-imports|reviews|returns|verification|social-studio)\//.test(value) && !/(?:^|\/)\.\.(?:\/|$)/.test(value) && !/[?#\\]/.test(value) ? value : '';
 
   const publicBase = String(process.env.R2_PUBLIC_URL || '').replace(/\/$/, '');
-  if (publicBase && value.startsWith(publicBase)) {
-    return value.slice(publicBase.length + 1);
-  }
-
   try {
-    const pathname = new URL(value).pathname.replace(/^\/+/, '');
-    return pathname;
+    const base = new URL(publicBase), url = new URL(value);
+    const prefix = base.pathname.replace(/\/$/, '') + '/';
+    if (url.origin !== base.origin || !url.pathname.startsWith(prefix) || url.search || url.hash) return '';
+    const key = decodeURIComponent(url.pathname.slice(prefix.length));
+    return key && !/(?:^|\/)\.\.(?:\/|$)/.test(key) && !/[?#\\]/.test(key) ? key : '';
   } catch {
     return '';
   }

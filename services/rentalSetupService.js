@@ -18,6 +18,11 @@ async function batchReadiness(store, listings, session = null) {
   const [products, assets] = session ? [await productQuery, await assetQuery] : await Promise.all([productQuery, assetQuery]);
   const now = new Date();
   const reservations = await M.Reservation.find({ storeId: store._id, assetId: { $in: assets.map(a => a._id) }, kind: 'BOOKING', active: true, blockedUntil: { $gt: now }, $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }] }).select('assetId').session(session).lean();
+  return readinessFromInventory(listings, products, assets, reservations);
+}
+// Calendars already read the selected products and pieces. Reuse those reads
+// while applying the same publication checks as the catalogue/setup screens.
+function readinessFromInventory(listings, products, assets, reservations = []) {
   const reservedIds = new Set(reservations.map(row => String(row.assetId)));
   const byId = new Map(products.map(p => [String(p._id), p]));
   const productReady = (productId, variantId) => {
@@ -88,4 +93,4 @@ async function registerPiecesInSession(store, listing, input, session, { checkRe
     registrationBatchId: operationId, registrationFingerprint: fingerprint })), { session });
   return { rows: rows.map(row => row.toObject()), quantity, replay: false };
 }
-module.exports = { readiness, batchReadiness, detail, registerPieces, registerPiecesInSession };
+module.exports = { readiness, batchReadiness, readinessFromInventory, detail, registerPieces, registerPiecesInSession };

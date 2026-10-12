@@ -128,6 +128,14 @@ function normalizeProductImages(product, req) {
 
 function normalizeProductPayload(data = {}) {
   const payload = { ...data };
+  const bridal = require('../services/bridalLookAlgorithms');
+  if (payload.bridalStyle !== undefined) payload.bridalStyle = bridal.normalizeStyle(payload.bridalStyle);
+  if (payload.lookDetails !== undefined) payload.lookDetails = bridal.normalizeDetails(payload.lookDetails);
+  if (payload.bridalStyleAnalysis !== undefined) {
+    const analysis = payload.bridalStyleAnalysis || {};
+    payload.bridalStyleAnalysis = { photoKey: String(analysis.photoKey || '').slice(0, 24000), status: ['completed', 'failed', 'caption'].includes(analysis.status) ? analysis.status : 'failed', suggestion: bridal.normalizeStyle(analysis.suggestion), analyzedAt: new Date() };
+  }
+  if (Array.isArray(payload.variants)) payload.variants = payload.variants.map(v => ({ ...v, ...(v.bridalStyle ? { bridalStyle: bridal.normalizeStyle(v.bridalStyle) } : {}) }));
   const images = normalizeImageEntries(payload.images).filter((image) => image.url && !isKnownMissingImage(image.url));
   if (images.length) {
     const primaryIndex = images.findIndex((image) => image.primary);

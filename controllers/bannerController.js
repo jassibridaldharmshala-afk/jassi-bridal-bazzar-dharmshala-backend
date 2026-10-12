@@ -52,6 +52,9 @@ function publicBannerView(banner) {
     title: value.title,
     subtitle: value.subtitle || '',
     image: value.image,
+    imageMedia: value.imageMedia,
+    tabletImageMedia: value.tabletImageMedia,
+    mobileImageMedia: value.mobileImageMedia,
     tabletImage: value.tabletImage || '',
     mobileImage: value.mobileImage || '',
     altText: value.altText || value.title,
@@ -144,6 +147,7 @@ exports.createBanner = asyncHandler(async (req, res) => {
   const banner = await createRecordOnce(req, { Model: Banner, filter: req.tenantFilter || {}, create: async identity => {
     const record = new Banner({ ...payload, ...identity });
     if (!record.campaignKey) record.campaignKey = `banner-${String(record._id)}`;
+    await require('../services/imageAssetService').attachImageMedia(record, ['image', 'mobileImage', 'tabletImage']);
     await record.save();
     logAudit({ req, action: 'BANNER_CREATE', entityType: 'Banner', entityId: record._id, storeId: record.storeId, after: auditSnapshot(record, AUDIT_FIELDS) });
     return record;
@@ -163,6 +167,7 @@ exports.updateBanner = asyncHandler(async (req, res) => {
   const before = auditSnapshot(banner, AUDIT_FIELDS);
   Object.assign(banner, readBannerPayload(req.body, banner));
   banner.revision = Number(banner.revision || 0) + 1;
+  await require('../services/imageAssetService').attachImageMedia(banner, ['image', 'mobileImage', 'tabletImage']);
   await banner.save();
   logAudit({ req, action: 'BANNER_UPDATE', entityType: 'Banner', entityId: banner._id, storeId: banner.storeId, before, after: auditSnapshot(banner, AUDIT_FIELDS) });
   res.json(managementBannerView(banner));

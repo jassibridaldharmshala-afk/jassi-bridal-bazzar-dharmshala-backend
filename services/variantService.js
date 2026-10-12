@@ -105,6 +105,7 @@ function normalizeVariantInput(raw = {}, product = {}) {
     price: price > 0 ? price : undefined,
     originalPrice: originalPrice > 0 ? originalPrice : undefined,
     images: Array.isArray(raw.images) ? raw.images : [],
+    ...(raw.bridalStyle !== undefined ? { bridalStyle: require('./bridalLookAlgorithms').normalizeStyle(raw.bridalStyle) } : {}),
     isActive: raw.isActive !== false,
   };
 }

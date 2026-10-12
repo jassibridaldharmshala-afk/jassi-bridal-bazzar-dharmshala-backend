@@ -4,13 +4,14 @@ const sharp = require('sharp');
 const { preparePhotoFile, responsivePhotoVariants } = require('../services/photoCompressionService');
 const { extract } = require('../services/rentalOwnerNotes');
 const { fitting } = require('../services/rentalFitting');
-test('responsive versions encode resized master pixels losslessly, keep transparency, and do not alter JPEG master bytes', async () => {
+test('responsive copies keep transparency and have separate byte budgets', async () => {
   const pixels = Buffer.alloc(2048 * 256 * 4); for (let i = 0; i < pixels.length; i += 4) { pixels[i] = (i / 4) % 255; pixels[i + 1] = 90; pixels[i + 2] = 160; pixels[i + 3] = 180; }
   const original = await sharp(pixels, { raw: { width: 2048, height: 256, channels: 4 } }).png().toBuffer();
   const file = await preparePhotoFile({ buffer: original, size: original.length, mimetype: 'image/png' });
-  const variants = await responsivePhotoVariants(file); assert.deepEqual(variants.map(v => v.width), [320, 640, 1200, 2000]);
-  for (const variant of variants) { const expected = await sharp(file.buffer).rotate().resize({ width: variant.width, withoutEnlargement: true }).raw().toBuffer(); assert.deepEqual(await sharp(variant.buffer).raw().toBuffer(), expected); }
-  const jpeg = await sharp(original).jpeg({ quality: 98 }).toBuffer(); const master = await preparePhotoFile({ buffer: jpeg, size: jpeg.length, mimetype: 'image/jpeg' }); await responsivePhotoVariants(master); assert.deepEqual(master.buffer, jpeg);
+  const variants = await responsivePhotoVariants(file); assert.deepEqual(variants.map(v => v.width), [160, 320, 640, 960, 1440]);
+  const budgets = [12, 30, 75, 150, 280].map(kb => kb * 1024);
+  for (const [index, variant] of variants.entries()) { assert.ok(variant.size <= budgets[index]); assert.equal((await sharp(variant.buffer).metadata()).hasAlpha, true); }
+  const jpeg = await sharp(original).jpeg({ quality: 98 }).toBuffer(); const master = await preparePhotoFile({ buffer: jpeg, size: jpeg.length, mimetype: 'image/jpeg' }); assert.equal(master.mimetype, 'image/webp'); assert.ok(master.size <= 512 * 1024);
 });
 test('small originals are never upscaled and duplicate target widths are removed', async () => { const source = await sharp({ create: { width: 100, height: 200, channels: 3, background: 'red' } }).png().toBuffer(); const rows = await responsivePhotoVariants({ buffer: source }); assert.deepEqual(rows.map(row => [row.width, row.height]), [[100, 200]]); });
 test('rental commercial values come only from explicit owner labels; ambiguous prices and inventory are not invented', () => {
@@ -25,6 +26,6 @@ test('generated display versions are already prepared and providers reuse the ex
   const versions = await responsivePhotoVariants(await preparePhotoFile({ buffer: original, mimetype: 'image/png', size: original.length }));
   for (const version of versions) {
     assert.equal(await preparePhotoFile(version), version);
-    assert.equal(version.photo.lossless, true);
+    assert.equal(version.photo.lossless, false);
   }
 });

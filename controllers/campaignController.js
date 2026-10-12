@@ -426,6 +426,7 @@ async function syncCampaign(campaign, req, active = true) {
     if (!banner) { banner = new Banner({ storeId: req.store?._id, campaignId: campaign._id }); createdBanner = true; }
     Object.assign(banner, bannerPayload, { campaignId: campaign._id, isArchived: false, archivedAt: undefined });
     if (oldBanner) banner.revision = Number(banner.revision || 0) + 1;
+    await require('../services/imageAssetService').attachImageMedia(banner, ['image', 'tabletImage', 'mobileImage']);
     await banner.save();
     campaign.coupon = coupon._id;
     campaign.banners = [banner._id];

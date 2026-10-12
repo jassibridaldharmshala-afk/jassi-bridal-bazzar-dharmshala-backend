@@ -85,7 +85,7 @@ function homeProduct(product, req) {
 
 function publicImage(image) {
   if (typeof image === 'string') return image;
-  return { url: image?.url || '', primary: Boolean(image?.primary), ...(image?.variants ? { variants: image.variants.map(({ url, width, height }) => ({ url, width, height })) } : {}) };
+  return { url: image?.url || '', primary: Boolean(image?.primary), ...(image?.variants ? { variants: image.variants.map(({ url, width, height, displayWidth }) => ({ url, width, height, ...(displayWidth ? { displayWidth } : {}) })) } : {}) };
 }
 
 function publicVariant(variant = {}) {

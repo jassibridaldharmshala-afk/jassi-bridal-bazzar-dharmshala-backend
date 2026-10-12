@@ -29,13 +29,26 @@ test('one visitor, three visits and ten page views survive duplicate delivery an
 });
 test('consent, disabled collection, known bots, invalid identity and forged purchases are guarded', async () => {
   const shop = await store(); const events = [row(id(), id())];
+  await Configuration.create({ storeId: shop._id, ga4Enabled: true, ga4MeasurementId: 'G-ABCDEF', consentRequired: true });
   assert.equal((await collect(shop, events, { consent: false })).data.reason, 'consent_required');
   assert.equal((await collect(shop, [row(id(), id(), 'PURCHASE')])).status, 400);
   assert.equal((await collect(shop, [row('short', id())])).status, 400);
   const bot = await request(`/api/analytics/collect?store=${shop.slug}`, { method: 'POST', headers: { 'User-Agent': 'Googlebot' }, body: { events, consent: true } }); assert.equal(bot.data.reason, 'excluded');
-  await Configuration.create({ storeId: shop._id, enabled: false });
+  await Configuration.updateOne({ storeId: shop._id }, { $set: { enabled: false } });
   assert.equal((await collect(shop, events)).data.reason, 'disabled'); assert.equal(await Event.countDocuments(), 0);
   const legacy = await request(`/api/analytics/events?store=${shop.slug}`, { method: 'POST', body: { name: 'PURCHASE' } }); assert.equal(legacy.data.reason, 'server_only_event');
+});
+test('basic visitor statistics count in the background without an analytics choice, including old prompt settings', async () => {
+  const shop = await store();
+  await Configuration.create({ storeId: shop._id, consentRequired: true, ga4Enabled: false });
+  const config = await request(`/api/analytics/config?store=${shop.slug}`);
+  assert.equal(config.status, 200); assert.equal(config.data.consentRequired, false);
+  const visitorId = id(), sessionId = id();
+  const result = await collect(shop, [row(visitorId, sessionId)], { consent: false });
+  assert.equal(result.status, 202, JSON.stringify(result.data)); assert.equal(result.data.accepted, 1);
+  await tick();
+  const stats = await report(shop);
+  assert.equal(stats.metrics.visitors.value, 1); assert.equal(stats.metrics.pageViews.value, 1);
 });
 test('withdrawal requires its privacy token, survives worker restart and leaves other stores intact', async () => {
   const a = await store('traffic-a'); const b = await store('traffic-b'); const visitorId = id();

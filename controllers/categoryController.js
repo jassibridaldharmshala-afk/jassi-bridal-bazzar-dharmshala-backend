@@ -240,6 +240,7 @@ exports.createCategory = asyncHandler(async (req, res) => {
     isArchived: false,
     archivedAt: null,
   }, req);
+  await require('../services/imageAssetService').attachImageMedia(payload, ['image', 'socialImage']);
   const category = await Category.create(payload);
   await logAudit({ req, action: 'CATEGORY_CREATE', entityType: 'Category', entityId: category._id, storeId: category.storeId, after: auditSnapshot(category, CATEGORY_AUDIT_FIELDS) });
   res.status(201).json(category);
@@ -282,6 +283,7 @@ exports.updateCategory = asyncHandler(async (req, res) => {
     ...(source.displayOrder !== undefined ? { displayOrder: normalizeDisplayOrder(source.displayOrder, category.displayOrder) } : {}),
   });
   if (category.isArchived) category.isActive = false;
+  await require('../services/imageAssetService').attachImageMedia(category, ['image', 'socialImage']);
   await category.save();
   if (source.parent !== undefined) await updateDescendantLevels(category, req);
   if (oldImage && oldImage !== category.image && oldImage !== category.socialImage) await safeDeleteCategoryImageIfUnused(oldImage);

@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const sharp = require('sharp');
 const { spawnSync } = require('node:child_process');
 const { request, resetDatabase, startTestEnvironment, stopTestEnvironment, getBaseUrl } = require('./helpers');
 const { createAdmin, createCustomer } = require('./factories');
@@ -56,16 +57,21 @@ test('admin and seller multipart uploads retain playable media and provide retri
       assert.equal(result.data.files.length, 1);
       assert.equal(result.data.provider, 'local');
       const file = result.data.files[0];
-      assert.equal(file.mimeType, media.type);
-      assert.equal(file.sizeBytes, media.bytes.length);
+      assert.equal(file.mimeType, media.type.startsWith('image/') ? 'image/webp' : media.type);
       const resolved = path.resolve(__dirname, '..', 'uploads', path.basename(file.url));
       assert.equal(resolved.startsWith(path.resolve(__dirname, '..', 'uploads') + path.sep), true);
       assert.equal(path.basename(resolved).includes(marker), true);
       uploadedPaths.push(resolved);
-      assert.deepEqual(await fs.readFile(resolved), media.bytes);
+      const saved = await fs.readFile(resolved);
+      assert.equal(file.sizeBytes, saved.length);
+      if (media.type.startsWith('image/')) {
+        const decoded = await sharp(saved).metadata();
+        assert.equal(decoded.format, 'webp'); assert.equal(decoded.width, 1); assert.equal(decoded.height, 1);
+        for (const variant of file.variants || []) uploadedPaths.push(path.resolve(__dirname, '..', 'uploads', variant.publicId));
+      } else assert.deepEqual(saved, media.bytes);
       const download = await fetch(`${getBaseUrl()}${file.url}`);
       assert.equal(download.status, 200);
-      assert.deepEqual(Buffer.from(await download.arrayBuffer()), media.bytes);
+      assert.deepEqual(Buffer.from(await download.arrayBuffer()), saved);
     }
   }
 });
@@ -94,7 +100,7 @@ test('review and return evidence photos require customer authentication and vali
   assert.equal(valid.data.files.length, 1);
   const stored = path.resolve(__dirname, '..', 'uploads', path.basename(valid.data.files[0].url));
   t.after(() => fs.unlink(stored).catch(() => null));
-  assert.deepEqual(await fs.readFile(stored), png);
+  assert.equal((await sharp(await fs.readFile(stored)).metadata()).format, 'webp');
   const returnUnauthenticated = await upload('/api/returns/uploads', 'images', png, 'image/png', 'return.png');
   assert.equal(returnUnauthenticated.status, 401);
   const returnSpoofed = await upload('/api/returns/uploads', 'images', Buffer.from('not-an-image'), 'image/png', 'spoofed-return.png', customer.token);
@@ -107,7 +113,7 @@ test('review and return evidence photos require customer authentication and vali
   assert.equal((await fetch(getBaseUrl() + returnUrl)).status, 401);
   const privateDownload = await fetch(getBaseUrl() + returnUrl, { headers: { Authorization: 'Bearer ' + customer.token } });
   assert.equal(privateDownload.status, 200);
-  assert.deepEqual(Buffer.from(await privateDownload.arrayBuffer()), png);
+  assert.equal((await sharp(Buffer.from(await privateDownload.arrayBuffer())).metadata()).format, 'webp');
 });
 
 test('bulk-uploaded draft photos remain available through editing and publication with local storage', async (t) => {
@@ -120,7 +126,8 @@ test('bulk-uploaded draft photos remain available through editing and publicatio
   const filePath = path.resolve(__dirname, '..', 'uploads', path.basename(new URL(draft.image, getBaseUrl()).pathname));
   assert.equal(path.basename(filePath).includes(marker), true);
   t.after(() => fs.unlink(filePath).catch(() => null));
-  assert.deepEqual(await fs.readFile(filePath), image, 'the draft photo must not be deleted as a temporary upload');
+  const saved = await fs.readFile(filePath);
+  assert.equal((await sharp(saved).metadata()).format, 'webp', 'the draft photo must remain decodable');
   assert.equal((await request('/api/admin/product-drafts', { token: admin.token })).data.data.length, 1);
   assert.equal((await request(`/api/admin/product-drafts/${draft._id}`, { token: admin.token })).data.data.image, draft.image);
   const category = await require('../models/Category').create({ name: 'Sarees', slug: 'bulk-sarees' });
@@ -131,7 +138,7 @@ test('bulk-uploaded draft photos remain available through editing and publicatio
   assert.equal(published.data.data.products[0].name, 'Rose Silk Saree');
   const served = await fetch(`${getBaseUrl()}${new URL(draft.image, getBaseUrl()).pathname}`);
   assert.equal(served.status, 200);
-  assert.deepEqual(Buffer.from(await served.arrayBuffer()), image);
+  assert.deepEqual(Buffer.from(await served.arrayBuffer()), saved, 'publication must retain the uploaded photo');
 });
 
 test('quick photo analysis sends the actual uploaded image, maps categories and leaves commercial fields manual', async (t) => {
