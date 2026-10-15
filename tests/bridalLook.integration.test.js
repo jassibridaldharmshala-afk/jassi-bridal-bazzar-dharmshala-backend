@@ -35,6 +35,18 @@ test('selected rent on mixed outfit uses real offers even with zero sale stock a
   assert.equal(row.look.options[0].unit, 'set'); assert.equal(row.look.options[0].dailyRatePaise, 20000);
 });
 
+test('matching validates exact source readiness without scanning the whole rental catalogue', async () => {
+  const catalogue = mock.method(require('../services/catalogCommerceService'), 'publicFilter', async () => { throw new Error('Unrelated whole-catalogue read'); });
+  try {
+    let result = await request(url()); assert.equal(result.status, 200, JSON.stringify(result.data));
+    assert.equal(result.data.contractVersion, 'bridal-look-v1'); assert.equal(catalogue.mock.callCount(), 0);
+    await M.Asset.updateOne({ _id: outfitPiece._id }, { status: 'RETIRED' });
+    result = await request(url()); assert.equal(result.status, 404); assert.match(result.data.message, /not ready/);
+    await Product.updateOne({ _id: source._id }, { commerceMode: 'RENTAL_ONLY' });
+    result = await request(url({}, 'buy')); assert.equal(result.status, 404);
+  } finally { catalogue.mock.restore(); }
+});
+
 test('new garments do not push actual accessory matches out of the bounded catalogue read', async () => {
   const later = new Date(Date.now() + 1000);
   await Product.insertMany(Array.from({ length: 245 }, (_, i) => ({ storeId: store._id, name: `Recent lehenga ${i}`, slug: `recent-lehenga-${i}`, category: source.category, commerceMode: 'SALE_ONLY', price: 1000, stock: 1, isActive: true, bridalStyle: { accessoryType: 'garment' }, updatedAt: later })));

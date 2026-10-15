@@ -24,7 +24,7 @@ async function runtimeTelemetry() {
       databaseLatencyMs: Date.now() - pingStartedAt, uptimeSeconds: Math.floor(process.uptime()),
       memoryRssMb: Math.round(process.memoryUsage().rss / 1048576), nodeVersion: process.version,
       paymentReady: Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
-      mediaStorageReady: Boolean((process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY) || (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET)),
+      mediaStorageReady: require('./r2Upload').isR2Configured(),
       shippingProvider: String(process.env.SHIPPING_PROVIDER || 'disabled').slice(0, 60),
     };
   } catch (error) {

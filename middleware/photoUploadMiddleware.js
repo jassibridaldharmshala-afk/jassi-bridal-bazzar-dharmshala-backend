@@ -5,8 +5,7 @@ const { Transform, pipeline } = require('node:stream');
 const multer = require('multer');
 const { ApiError } = require('../utils/apiError');
 const { PHOTO_SOURCE_MAX_BYTES, PHOTO_BATCH_MAX_BYTES } = require('../services/photoCompressionService');
-const uploadDir = path.join(__dirname, '../uploads');
-fs.mkdirSync(uploadDir, { recursive: true });
+const { stagingDirectory } = require('../services/mediaStagingService');
 const totalBytes = Symbol('photoUploadBytes');
 const abortHandlers = Symbol('photoUploadAbortHandlers');
 const allowed = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
@@ -30,7 +29,7 @@ function onUploadAbort(req, handler) {
 // Stage originals on disk, with a streaming aggregate limit. Allowing a 20 MB
 // photo must not turn a 30-photo request into a 600 MB in-memory upload.
 function createPhotoUpload({ files = 8, fields = 20, maxFileBytes = PHOTO_SOURCE_MAX_BYTES, privateEvidence = false, allowVideo = false } = {}) {
-  const directory = privateEvidence ? path.join(require('node:os').tmpdir(), 'jassi-private-evidence') : uploadDir;
+  const directory = privateEvidence ? path.join(require('node:os').tmpdir(), 'jassi-private-evidence') : stagingDirectory();
   fs.mkdirSync(directory, { recursive: true });
   const storage = {
     _handleFile(req, file, cb) {

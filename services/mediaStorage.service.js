@@ -6,43 +6,35 @@ const {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
-  PutObjectCommand,
 } = require('@aws-sdk/client-s3');
 const {
   buildPublicUrl,
   getR2Client,
   isR2Configured,
+  uploadImageToR2,
   uploadFileToR2,
 } = require('./r2Upload');
 const {
   deleteFile: deleteCloudinaryFile,
   isCloudinaryConfigured,
-  uploadImage,
-  uploadVideo,
 } = require('./cloudinaryUpload');
 
 function getStorageProvider() {
   if (isR2Configured()) return 'r2';
-  if (isCloudinaryConfigured()) return 'cloudinary';
   return null;
 }
 
 function assertStorageConfigured() {
   const provider = getStorageProvider();
   if (!provider) {
-    const error = new Error('Reel import storage is not configured. Connect R2 or Cloudinary.');
-    error.code = 'REEL_STORAGE_NOT_CONFIGURED';
-    error.statusCode = 503;
-    throw error;
+    throw new (require('../utils/apiError').ApiError)('PERSISTENT_UPLOAD_STORAGE_REQUIRED', 'Connect Cloudflare R2 before uploading or generating media.', { statusCode: 503 });
   }
   return provider;
 }
 
 async function uploadOriginalVideo(file, options = {}) {
   const provider = assertStorageConfigured();
-  const uploaded = provider === 'r2'
-    ? await uploadFileToR2(file, { ...options, folder: options.folder || 'reel-imports/original' })
-    : await uploadVideo(file, { ...options, folder: options.folder || 'reel-imports/original' });
+  const uploaded = await uploadFileToR2(file, { ...options, folder: options.folder || 'reel-imports/original' });
   return {
     provider,
     storageKey: uploaded.publicId,
@@ -52,15 +44,12 @@ async function uploadOriginalVideo(file, options = {}) {
 
 async function uploadGeneratedImage(file, options = {}) {
   const provider = assertStorageConfigured();
-  file = await require('./photoCompressionService').preparePhotoFile(file);
-  const uploaded = provider === 'r2'
-    ? await uploadFileToR2(file, { ...options, folder: options.folder || 'reel-imports/candidates' })
-    : await uploadImage(file, { ...options, folder: options.folder || 'reel-imports/candidates' });
-  const variants = [];
+  file = await require('./photoCompressionService').preparePhotoFile(/^image\//i.test(file.mimetype || '') ? file : require('./photoStoragePolicy').photoFileInput(file));
+  const uploaded = await uploadFileToR2(file, { ...options, folder: options.folder || 'reel-imports/candidates' });
+  const variants = [require('./photoStoragePolicy').displayMaster(file, uploaded)];
   for (const variant of options.responsive === false ? [] : await require('./photoCompressionService').responsivePhotoVariants(file)) {
     const uploadId = require('node:crypto').createHash('sha256').update(uploaded.publicId + ':' + require('./photoCompressionService').PHOTO_RECIPE + ':' + variant.width).digest('hex');
-    const display = provider === 'r2' ? await uploadFileToR2(variant, { ...options, folder: options.folder || 'reel-imports/candidates', uploadId })
-      : await uploadImage(variant, { ...options, folder: options.folder || 'reel-imports/candidates', uploadId });
+    const display = await uploadFileToR2(variant, { ...options, folder: options.folder || 'reel-imports/candidates', uploadId });
     variants.push({ ...display, provider, width: variant.width, height: variant.height, displayWidth: variant.displayWidth, mimeType: variant.mimetype, sizeBytes: variant.size });
   }
   const result = { provider, storageKey: uploaded.publicId, publicId: uploaded.publicId, url: uploaded.url, variants,
@@ -218,18 +207,13 @@ async function createSignedReadUrl({ provider, storageKey, url }) {
 }
 
 async function putBufferToR2(buffer, storageKey, contentType = 'application/octet-stream') {
-  if (String(contentType).startsWith('image/')) {
-    const photo = await require('./photoCompressionService').compressPhotoBuffer(buffer);
-    buffer = photo.buffer;
-    contentType = photo.mimeType;
-  }
-  await getR2Client().send(new PutObjectCommand({
-    Bucket: process.env.R2_BUCKET_NAME,
-    Key: storageKey,
-    Body: buffer,
-    ContentType: contentType,
-  }));
-  return { provider: 'r2', storageKey, url: buildPublicUrl(storageKey) };
+  const policy = require('./photoStoragePolicy');
+  const file = { buffer, mimetype: contentType, originalname: storageKey, size: buffer.length };
+  if (!await policy.isPhotoFile(file)) throw new (require('../utils/apiError').ApiError)('UPLOAD_IMAGE_INVALID', 'Buffer uploads must contain a supported photo.', { statusCode: 400 });
+  // The buffer helper uses the same guarded writer as every other photo path.
+  const uploadId = require('node:crypto').createHash('sha256').update(storageKey + ':' + require('./photoCompressionService').PHOTO_RECIPE + ':').update(buffer).digest('hex');
+  const saved = await uploadImageToR2(file, { uploadId, recovering: true, folder: storageKey.split('/')[0] });
+  return { ...saved, provider: 'r2', storageKey: saved.publicId };
 }
 
 async function cleanupLocalFile(filePath) {

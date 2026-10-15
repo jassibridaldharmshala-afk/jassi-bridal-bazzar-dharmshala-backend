@@ -1,4 +1,5 @@
 const test = require('node:test');
+const cloudFixture = require('./r2MediaFixture').r2MediaFixture(test);
 const assert = require('node:assert/strict');
 const sharp = require('sharp');
 const fs = require('node:fs/promises');
@@ -20,7 +21,7 @@ async function samePixels(source, output) {
   const original = await sharp(source).rotate().metadata();
   const stored = await sharp(output).metadata();
   assert.equal(stored.format, 'webp');
-  assert.ok(output.length <= 512 * 1024);
+  assert.ok(output.length <= 220 * 1024);
   const oriented = original.autoOrient || { width: original.width, height: original.height };
   assert.ok(Math.abs(stored.width / stored.height - oriented.width / oriented.height) < 0.02);
 }
@@ -30,9 +31,9 @@ test('multi-megabyte sources save a bounded WebP master without cropping', async
   const png = await sharp(pixels, { raw }).png({ compressionLevel: 0 }).toBuffer();
   assert.ok(png.length > 2 * 1024 * 1024);
   const output = await compressPhotoBuffer(png);
-  assert.ok(output.buffer.length <= 512 * 1024); assert.ok(output.buffer.length < png.length / 3);
+  assert.ok(output.buffer.length <= 220 * 1024); assert.ok(output.buffer.length < png.length / 3);
   assert.equal(output.mimeType, 'image/webp'); assert.equal(output.lossless, false);
-  assert.ok(output.width <= 2000); assert.ok(output.height <= 2000);
+  assert.ok(output.width <= 1600); assert.ok(output.height <= 1600);
   await samePixels(png, output.buffer);
 });
 
@@ -91,21 +92,20 @@ test('corrupt, unsupported, animated and oversized images fail before persistenc
   await assert.rejects(compressPhotoBuffer(huge), /could not be decoded/);
 });
 
-test('generated local assets compress and leave source files untouched', async () => {
+test('generated Cloudflare assets compress and leave temporary source files untouched', async () => {
   const { pixels, raw } = texturedPixels(700, 700);
   const original = await sharp(pixels, { raw }).png({ compressionLevel: 0 }).toBuffer();
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'photo-compress-'));
   const source = path.join(directory, 'source.png'); let stored;
   try {
     await fs.writeFile(source, original);
-    stored = await require('../services/uploadRetryService').persistLocal({ path: source, mimetype: 'image/png', originalname: 'generated.png', size: original.length });
-    const bytes = await fs.readFile(path.join(__dirname, '../uploads', stored.publicId));
+    stored = await require('../services/generatedMediaService').persistGeneratedFile({ path: source, mimetype: 'image/png', originalname: 'generated.png', size: original.length }, { namespace: 'fixture', ownerId: 'owner', slot: 0, recipe: 'fixture' });
+    const bytes = cloudFixture.bytes(stored.publicId);
     assert.ok(bytes.length <= original.length);
     await samePixels(original, bytes);
     assert.deepEqual(await fs.readFile(source), original);
     assert.equal(stored.mimeType, 'image/webp'); assert.equal(stored.sizeBytes, bytes.length);
   } finally {
-    if (stored) await fs.unlink(path.join(__dirname, '../uploads', stored.publicId)).catch(() => {});
     await fs.unlink(source).catch(() => {}); await fs.rmdir(directory).catch(() => {});
   }
 });

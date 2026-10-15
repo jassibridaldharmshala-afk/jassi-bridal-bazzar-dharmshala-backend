@@ -11,7 +11,7 @@ const { fail } = require('./meta');
 const storage = require('../../services/mediaStorage.service');
 const uploads = path.resolve(__dirname, '../../uploads');
 function allowedRoots() {
-  const roots = [process.env.R2_PUBLIC_URL, process.env.PUBLIC_API_URL];
+  const roots = [process.env.R2_PUBLIC_URL];
   if (process.env.CLOUDINARY_CLOUD_NAME) roots.push(`https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/`);
   return roots.filter(Boolean).map(root => { try { return new URL(root); } catch { return null; } }).filter(Boolean);
 }
@@ -47,19 +47,7 @@ async function download(value, destination, hop = 0) {
   await fs.writeFile(destination, result.bytes);
 }
 async function photoFile(value, destination) {
-  let relative = String(value);
-  if (/^https?:/i.test(relative)) {
-    const url = new URL(relative);
-    if ([process.env.PUBLIC_API_URL, 'http://localhost:5000', 'http://127.0.0.1:5000'].filter(Boolean).some(root => new URL(root).origin === url.origin) && url.pathname.startsWith('/uploads/')) relative = decodeURIComponent(url.pathname);
-    else return download(relative, destination);
-  }
-  if (!relative.startsWith('/uploads/')) throw fail('Upload this product photo to your media library first.');
-  const file = await fs.realpath(path.resolve(uploads, relative.slice('/uploads/'.length))).catch(() => null);
-  const root = await fs.realpath(uploads);
-  if (!file || !file.startsWith(root + path.sep)) throw fail('Product photo not found.');
-  const stat = await fs.stat(file);
-  if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw fail('Product photo is too large.');
-  await fs.copyFile(file, destination);
+  return download(String(value), destination);
 }
 async function verifyImage(file) {
   const handle = await fs.open(file, 'r');

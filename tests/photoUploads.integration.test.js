@@ -7,6 +7,7 @@ const { startTestEnvironment, stopTestEnvironment, resetDatabase, getBaseUrl } =
 const { createAdmin, createCustomer } = require('./factories');
 const { createUploadSeller } = require('./photoUploadFixtures');
 test.before(startTestEnvironment); test.after(stopTestEnvironment); test.beforeEach(resetDatabase);
+const cloud = require('./r2MediaFixture').r2MediaFixture(test);
 
 test('public photos, evidence and grouped drafts accept large sources but save bounded WebP', async t => {
   const admin = await createAdmin(), customer = await createCustomer(), seller = await createUploadSeller();
@@ -32,11 +33,11 @@ test('public photos, evidence and grouped drafts accept large sources but save b
     const file = route.draft ? { url: data.data.drafts[0].image } : data.files[0];
     const url = file.url || file.fileUrl;
     const privateFile = file.provider === 'private';
-    const name = path.basename(new URL(url, getBaseUrl()).pathname); if (!privateFile) stored.push(name);
+    const name = path.basename(new URL(url, getBaseUrl()).pathname); if (!privateFile) assert.ok(url.startsWith(cloud.url + '/'));
     const download = await fetch(new URL(url, getBaseUrl()), privateFile ? { headers: { Authorization: 'Bearer ' + route.token } } : {});
     assert.equal(download.status, 200); const bytes = Buffer.from(await download.arrayBuffer());
     assert.ok(bytes.length <= source.length, route.path);
-    assert.ok(bytes.length <= 512 * 1024, route.path);
+    assert.ok(bytes.length <= 220 * 1024, route.path);
     assert.equal((await sharp(bytes).metadata()).format, 'webp');
     if (!route.draft) { assert.equal(file.mimeType, 'image/webp'); assert.equal(file.sizeBytes, bytes.length); }
     const downloaded = await fetch(new URL(url, getBaseUrl()), privateFile ? { headers: { Authorization: 'Bearer ' + route.token } } : {});

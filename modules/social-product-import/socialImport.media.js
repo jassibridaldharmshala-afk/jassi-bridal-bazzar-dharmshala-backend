@@ -7,11 +7,10 @@ const ffprobe = require('ffprobe-static').path;
 const { ApiError } = require('../../utils/apiError');
 const network = require('./socialImport.network');
 const r2 = require('../../services/r2Upload');
-const cloudinary = require('../../services/cloudinaryUpload');
 const { selectProductFrames } = require('../../services/productFrameSelection.service');
 const { preparePhotoFile } = require('../../services/photoCompressionService');
 
-const storageReady = () => process.env.NODE_ENV !== 'production' || r2.isR2Configured() || cloudinary.isCloudinaryConfigured();
+const storageReady = () => r2.isR2Configured();
 function run(binary, args, signal) {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -64,7 +63,7 @@ async function persist(file, jobId, video = false) {
   const generated = require('../../services/generatedMediaService');
   const stored = await generated.persistGeneratedFile(input, { namespace: 'social-media', ownerId: jobId, slot: file.id, recipe: ['native-v1', await generated.fileDigest(input)] }, { video, folder: 'products/social-imports' });
   const provider = stored.provider;
-  return { id: file.id, url: provider === 'local' ? new URL(stored.url).pathname : stored.url, publicId: stored.storageKey, variants: stored.variants?.map(variant => provider === 'local' ? { ...variant, url: new URL(variant.url).pathname } : variant), provider, kind: file.kind, timestamp: file.timestamp,
+  return { id: file.id, url: stored.url, publicId: stored.storageKey, variants: stored.variants, provider, kind: file.kind, timestamp: file.timestamp,
     qualityScore: file.qualityScore, sharpnessScore: file.sharpnessScore, exposureScore: file.exposureScore, recommended: file.recommended,
     recommendedCover: file.recommendedCover, viewType: file.viewType, qualityWarnings: file.qualityWarnings,
     width: input.photo?.width || file.width, height: input.photo?.height || file.height, sizeBytes: input.size, mimeType: input.mimetype, selectionVersion: file.selectionVersion };

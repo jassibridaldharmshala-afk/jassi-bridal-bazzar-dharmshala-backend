@@ -10,7 +10,7 @@ const ProductDraft = require('../models/ProductDraft');
 const Category = require('../models/Category');
 const { deleteImageFromR2, isR2Configured } = require('../services/r2Upload');
 const { deleteFile: deleteCloudinaryFile, isCloudinaryConfigured } = require('../services/cloudinaryUpload');
-const { isLocalRequest, normalizeProductImages, normalizeProductPayload, sanitizeProductImages } = require('../utils/imageUtils');
+const { normalizeProductImages, normalizeProductPayload, sanitizeProductImages } = require('../utils/imageUtils');
 const { normalizeProductSizing, validateProductSizing } = require('../services/productSizingService');
 const { validateVariantPayload } = require('../services/variantService');
 const { andFilter } = require('../services/storeService');
@@ -65,8 +65,8 @@ exports.bulkUpload = async (req, res, next) => {
     const respondAsync = req.body?.asyncUpload === true || req.body?.asyncUpload === 'true';
     if (respondAsync && !resume && req.files?.length) resolveDraftPhotoGroups(req.body || {}, req.files.length);
     if (!resume && !req.files?.length) return res.status(400).json({ success: false, message: 'Please upload at least one image' });
-    if (!isR2Configured() && !isCloudinaryConfigured() && process.env.NODE_ENV === 'production' && !isLocalRequest(req)) {
-      throw new ApiError('PERSISTENT_UPLOAD_STORAGE_REQUIRED', 'Draft images need Cloudflare R2 or Cloudinary in production.', { statusCode: 503 });
+    if (!isR2Configured()) {
+      throw new ApiError('PERSISTENT_UPLOAD_STORAGE_REQUIRED', 'Connect Cloudflare R2 before uploading draft images.', { statusCode: 503 });
     }
     const result = await runUploadRequest(req, async context => {
       const fields = context.fields || req.body || {};

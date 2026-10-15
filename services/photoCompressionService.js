@@ -5,9 +5,15 @@ const { ApiError } = require('../utils/apiError');
 const PHOTO_SOURCE_MAX_BYTES = 20 * 1024 * 1024;
 const PHOTO_BATCH_MAX_BYTES = 60 * 1024 * 1024;
 const PHOTO_PRIVATE_MAX_BYTES = 8 * 1024 * 1024;
-const PHOTO_RECIPE = 'webp-v2';
-const PHOTO_MASTER_MAX_BYTES = 512 * 1024;
-const PHOTO_MASTER_MAX_EDGE = 2000;
+const PHOTO_RECIPE = 'webp-v3-compact';
+const PHOTO_MASTER_MAX_BYTES = 220 * 1024;
+const PHOTO_MASTER_MAX_EDGE = 1600;
+const PHOTO_VARIANT_PROFILES = Object.freeze([
+  Object.freeze({ width: 160, maxBytes: 8 * 1024, quality: 76, minimumQuality: 66 }),
+  Object.freeze({ width: 360, maxBytes: 22 * 1024, quality: 78, minimumQuality: 68 }),
+  Object.freeze({ width: 720, maxBytes: 60 * 1024, quality: 80, minimumQuality: 72 }),
+]);
+const PHOTO_TOTAL_MAX_BYTES = PHOTO_MASTER_MAX_BYTES + PHOTO_VARIANT_PROFILES.reduce((n, profile) => n + profile.maxBytes, 0);
 const prepared = new WeakMap();
 const photoTypes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const invalid = message => new ApiError('UPLOAD_IMAGE_INVALID', message, { statusCode: 400 });
@@ -41,7 +47,7 @@ async function optimizePhoto(source) {
       !metadata.exif && !metadata.xmp && !metadata.iptc && !metadata.icc) {
       return { buffer: source, mimeType: 'image/webp', width: metadata.width, height: metadata.height, skipped: true, lossless: false };
     }
-    const { data, info } = await encodeDisplay(image, { edge: PHOTO_MASTER_MAX_EDGE, maxBytes: PHOTO_MASTER_MAX_BYTES, quality: 84, minimumQuality: 76 });
+    const { data, info } = await encodeDisplay(image, { edge: PHOTO_MASTER_MAX_EDGE, maxBytes: PHOTO_MASTER_MAX_BYTES, quality: 82, minimumQuality: 72 });
     return { buffer: data, mimeType: 'image/webp', width: info.width, height: info.height, skipped: false, lossless: false };
   } catch (error) {
     if (error instanceof ApiError) throw error;
@@ -74,16 +80,12 @@ function responsivePhotoVariants(file) {
     const image = sharp(source, { limitInputPixels: 50000000, failOn: 'warning' });
     const metadata = prepared.has(file) ? await image.metadata() : (await decodedImage(source)).metadata;
     const nativeWidth = metadata.autoOrient?.width || ([5, 6, 7, 8].includes(metadata.orientation) ? metadata.height : metadata.width);
-    const profiles = [
-      { width: 160, maxBytes: 12 * 1024, quality: 78, minimumQuality: 70 },
-      { width: 320, maxBytes: 30 * 1024, quality: 80, minimumQuality: 72 },
-      { width: 640, maxBytes: 75 * 1024, quality: 82, minimumQuality: 74 },
-      { width: 960, maxBytes: 150 * 1024, quality: 82, minimumQuality: 76 },
-      { width: 1440, maxBytes: 280 * 1024, quality: 84, minimumQuality: 78 },
-    ];
     const rows = [];
-    for (const profile of profiles) {
-      const width = Math.min(profile.width, nativeWidth);
+    for (const profile of PHOTO_VARIANT_PROFILES) {
+      // Reuse the master for detail/zoom instead of uploading another native
+      // width copy. Small photos are never enlarged or stored several times.
+      if (profile.width >= nativeWidth) continue;
+      const width = profile.width;
       if (rows.some(row => row.width === width)) continue;
       const { data, info } = await encodeDisplay(image, { ...profile, width });
       if (rows.some(row => row.width === info.width)) continue;
@@ -140,5 +142,5 @@ async function preparePhotoFile(file) {
   try { return await pending; } catch (error) { prepared.delete(file); throw error; }
 }
 
-module.exports = { PHOTO_SOURCE_MAX_BYTES, PHOTO_BATCH_MAX_BYTES, PHOTO_PRIVATE_MAX_BYTES, PHOTO_MASTER_MAX_BYTES, PHOTO_MASTER_MAX_EDGE, PHOTO_RECIPE,
+module.exports = { PHOTO_SOURCE_MAX_BYTES, PHOTO_BATCH_MAX_BYTES, PHOTO_PRIVATE_MAX_BYTES, PHOTO_MASTER_MAX_BYTES, PHOTO_MASTER_MAX_EDGE, PHOTO_VARIANT_PROFILES, PHOTO_TOTAL_MAX_BYTES, PHOTO_RECIPE,
   compressPhotoBuffer, prepareAnalysisPhotoBuffer, preparePhotoFile, responsivePhotoVariants };

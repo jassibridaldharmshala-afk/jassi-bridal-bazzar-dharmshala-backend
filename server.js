@@ -7,7 +7,6 @@ dotenv.config();
 const app = require('./app');
 const connectDB = require('./config/db');
 const { isR2Configured } = require('./services/r2Upload');
-const { isCloudinaryConfigured } = require('./services/cloudinaryUpload');
 const { assertProductionSecrets, getOtpMode, isProduction } = require('./config/env');
 const { isLocalOwnerDemoEnabled } = require('./config/localOwnerDemo');
 const mongoose = require('mongoose');
@@ -55,7 +54,7 @@ async function startServer() {
   await connectDB();
 
   const PORT = process.env.PORT || process.env.SERVER_PORT || 5000;
-  const persistentImageStorageConfigured = isR2Configured() || isCloudinaryConfigured();
+  const persistentImageStorageConfigured = isR2Configured();
   const localOwnerDemoRequested = isLocalOwnerDemoEnabled();
   const localOwnerDemo = localOwnerDemoRequested && !isProduction();
   if (localOwnerDemoRequested && !localOwnerDemo) {
@@ -148,7 +147,7 @@ async function startServer() {
   }
 
   if (isProduction() && !persistentImageStorageConfigured) {
-    console.warn('Persistent image storage is not configured. Product uploads will be rejected until Cloudinary or R2 is connected.');
+    console.warn('Cloudflare R2 is not configured. Media uploads will be rejected until R2 is connected.');
   }
 }
 

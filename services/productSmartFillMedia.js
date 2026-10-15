@@ -1,23 +1,15 @@
-const fs = require('node:fs/promises');
-const path = require('node:path');
 const https = require('node:https');
 const dns = require('node:dns/promises');
 const { publicAddress } = require('../modules/social-product-import/socialImport.network');
 const { ApiError } = require('../utils/apiError');
 
 const MAX_BYTES = require('./photoCompressionService').PHOTO_SOURCE_MAX_BYTES;
-const uploads = path.resolve(__dirname, '../uploads');
 const blocked = () => new ApiError('SMART_FILL_MEDIA', 'Choose photos uploaded through this product form. Re-upload any photo that is no longer available.');
 const parseUrl = (value) => { try { return new URL(value); } catch { return null; } };
 
 function mediaLocation(value) {
   if (typeof value !== 'string' || value.length > 4096 || /[\\\u0000-\u001f]/.test(value)) throw blocked();
-  const ownApi = parseUrl(process.env.PUBLIC_API_URL);
   const url = parseUrl(value);
-  const local = !url ? value : (['localhost', '127.0.0.1'].includes(url.hostname) || ownApi?.origin === url.origin) ? url.pathname : '';
-  if (/^\/uploads\/[a-zA-Z0-9_.-]+$/.test(local) && !local.includes('..') && (!url || !url.username && !url.password)) {
-    return { file: path.join(uploads, local.slice('/uploads/'.length)) };
-  }
   if (!url || url.protocol !== 'https:' || url.username || url.password || url.port) throw blocked();
   const r2 = parseUrl(process.env.R2_PUBLIC_URL);
   const cloud = String(process.env.CLOUDINARY_CLOUD_NAME || '').trim();
@@ -39,18 +31,6 @@ function verifiedImage(buffer) {
 async function readProductPhoto(value, signal, redirects = 0) {
   const location = mediaLocation(value);
   signal?.throwIfAborted();
-  if (location.file) {
-    const [root, resolved] = await Promise.all([fs.realpath(uploads), fs.realpath(location.file)]);
-    if (path.dirname(resolved).toLowerCase() !== root.toLowerCase()) throw blocked();
-    const handle = await fs.open(resolved, 'r');
-    try {
-      const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > MAX_BYTES) throw blocked();
-      const buffer = Buffer.alloc(Math.min(MAX_BYTES + 1, stat.size + 1));
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      return verifiedImage(buffer.subarray(0, bytesRead));
-    } finally { await handle.close(); }
-  }
   const { url } = location;
   // Pin the checked address for the request to prevent DNS rebinding.
   const records = await dns.lookup(url.hostname, { all: true, family: 4 });

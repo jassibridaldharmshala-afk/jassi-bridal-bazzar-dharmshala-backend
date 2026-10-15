@@ -6,7 +6,7 @@ const path = require('node:path');
 const mongoose = require('mongoose');
 const { startTestEnvironment, stopTestEnvironment, resetDatabase, getBaseUrl, request } = require('./helpers');
 const { createAdmin } = require('./factories');
-const { runUploadRequest, invalidateStoredUpload, persistLocal } = require('../services/uploadRetryService');
+const { runUploadRequest, invalidateStoredUpload } = require('../services/uploadRetryService');
 const Operation = require('../models/UploadOperation');
 const ProductDraft = require('../models/ProductDraft');
 const r2 = require('../services/r2Upload');
@@ -14,6 +14,7 @@ const cloud = require('../services/cloudinaryUpload');
 test.before(startTestEnvironment);
 test.after(stopTestEnvironment);
 test.beforeEach(resetDatabase);
+const cloudFixture = require('./r2MediaFixture').r2MediaFixture(test);
 
 function req(key = crypto.randomUUID(), overrides = {}) {
   return { headers: { 'idempotency-key': key }, user: { _id: new mongoose.Types.ObjectId() }, store: { _id: new mongoose.Types.ObjectId() },
@@ -98,56 +99,29 @@ test('real draft upload survives insert failure, response loss and deliberate dr
     const media = created.data.data.drafts[0].images[0];
     assert.equal(media.variants.length, 1); assert.equal(media.variants[0].width, (await require('sharp')(image).metadata()).width);
     assert.deepEqual(replay.data.data.drafts[0].images[0].variants, media.variants);
-    assert.equal(counter.calls, 1 + media.variants.length);
+    assert.equal(counter.calls, new Set([media.publicId, ...media.variants.map(row => row.publicId)]).size);
     assert.equal(created.data.data.drafts[0].uploadOperationId, undefined);
     await ProductDraft.deleteMany({});
     const removed = await multipart(token, key); assert.equal(removed.status, 409);
-    assert.equal(await ProductDraft.countDocuments(), 0); assert.equal(counter.calls, 1 + media.variants.length);
+    assert.equal(await ProductDraft.countDocuments(), 0); assert.equal(counter.calls, new Set([media.publicId, ...media.variants.map(row => row.publicId)]).size);
   } finally { ProductDraft.create = originalCreate; r2.uploadImageToR2 = originalUpload; for (const name of Object.keys(process.env)) if (name.startsWith('R2_')) delete process.env[name]; }
 });
-test('local retries retain one durable file and remove all disposable staging copies', async () => {
+test('Cloudflare retries retain the same object and remove disposable staging copies', async () => {
   const { token } = await createAdmin(), key = crypto.randomUUID();
-  let publicId;
-  try {
-    const created = await multipart(token, key, '/api/admin/uploads?folder=products'); assert.equal(created.status, 201, JSON.stringify(created.data));
-    publicId = created.data.files[0].publicId;
-    const replay = await multipart(token, key, '/api/admin/uploads?folder=products'); assert.equal(replay.status, 201);
-    assert.equal(replay.data.files[0].publicId, publicId);
-    const bytes = await fs.readFile(path.join(__dirname, '..', 'uploads', publicId)); assert.deepEqual(bytes, image);
-    await fs.unlink(path.join(__dirname, '..', 'uploads', publicId));
-    assert.equal((await multipart(token, key, '/api/admin/uploads?folder=products')).status, 409);
-  } finally { if (publicId) await fs.unlink(path.join(__dirname, '..', 'uploads', publicId)).catch(() => {}); }
+  const created = await multipart(token, key, '/api/admin/uploads?folder=products'); assert.equal(created.status, 201, JSON.stringify(created.data));
+  const puts = cloudFixture.puts, publicId = created.data.files[0].publicId;
+  const replay = await multipart(token, key, '/api/admin/uploads?folder=products'); assert.equal(replay.status, 201);
+  assert.equal(replay.data.files[0].publicId, publicId); assert.equal(cloudFixture.puts, puts);
+  assert.deepEqual(cloudFixture.bytes(publicId), image);
 });
-test('interrupted local copies never expose a partial file, and recovery repairs an old incomplete target', async () => {
-  const uploadId = crypto.createHash('sha256').update(crypto.randomUUID()).digest('hex');
-  const source = path.join(__dirname, '..', 'uploads', `test-${crypto.randomUUID()}.webp`);
-  const target = path.join(__dirname, '..', 'uploads', `retry-${uploadId}.webp`);
-  const nativeCopy = fs.copyFile;
-  let staging;
-  try {
-    await fs.writeFile(source, image);
-    const file = { path: source, originalname: 'one.webp', mimetype: 'image/webp', size: image.length };
-    fs.copyFile = async (_source, destination) => {
-      staging = destination;
-      await fs.writeFile(destination, image.subarray(0, 5));
-      throw new Error('synthetic interrupted copy');
-    };
-    await assert.rejects(persistLocal(file, { uploadId, recovering: true }), /interrupted copy/);
-    assert.equal(await fs.access(target).then(() => true, () => false), false);
-    assert.equal(await fs.access(staging).then(() => true, () => false), false);
-    fs.copyFile = nativeCopy;
-    // A partial target from an older release must not be mistaken for success.
-    await fs.writeFile(target, image.subarray(0, 5));
-    const recovered = await persistLocal(file, { uploadId, recovering: true });
-    assert.equal(recovered.publicId, path.basename(target));
-    assert.deepEqual(await fs.readFile(target), image);
-    const replay = await persistLocal(file, { uploadId, recovering: true });
-    assert.equal(replay.publicId, recovered.publicId);
-  } finally {
-    fs.copyFile = nativeCopy;
-    for (const filename of [source, target, staging].filter(Boolean)) await fs.unlink(filename).catch(() => {});
-  }
+
+test('missing Cloudflare configuration rejects uploads even during local development', async () => {
+  const { token } = await createAdmin(); cloudFixture.disable();
+  const created = await multipart(token, crypto.randomUUID(), '/api/admin/uploads?folder=products');
+  assert.equal(created.status, 503); assert.equal(created.data.code, 'PERSISTENT_UPLOAD_STORAGE_REQUIRED');
+  assert.equal(cloudFixture.objects.size, 0);
 });
+
 test('permanent draft deletion invalidates its upload receipt and a retry cannot recreate it', async () => {
   const { token } = await createAdmin(), key = crypto.randomUUID();
   const created = await multipart(token, key); assert.equal(created.status, 201);
@@ -162,7 +136,7 @@ test('permanent draft deletion invalidates its upload receipt and a retry cannot
   assert.equal(replay.status, 409); assert.equal(await ProductDraft.countDocuments(), 0);
 });
 test('Cloudinary uses a signed non-overwriting identity and recovers a committed upload without sending bytes again', async () => {
-  const filePath = path.join(__dirname, '..', 'uploads', `test-${crypto.randomUUID()}.webp`);
+  const filePath = path.join(require('node:os').tmpdir(), `test-${crypto.randomUUID()}.webp`);
   const nativeFetch = global.fetch;
   const uploadId = 'a'.repeat(64); const calls = [];
   Object.assign(process.env, { CLOUDINARY_CLOUD_NAME: 'test', CLOUDINARY_API_KEY: 'test', CLOUDINARY_API_SECRET: 'test' });
@@ -184,7 +158,7 @@ test('Cloudinary uses a signed non-overwriting identity and recovers a committed
 });
 
 test('R2 recovers an ambiguous committed write by checking its stable object key, not uploading another object', async () => {
-  const filePath = path.join(__dirname, '..', 'uploads', `test-${crypto.randomUUID()}.webp`);
+  const filePath = path.join(require('node:os').tmpdir(), `test-${crypto.randomUUID()}.webp`);
   Object.assign(process.env, { R2_ACCOUNT_ID: 'test', R2_ACCESS_KEY_ID: 'test', R2_SECRET_ACCESS_KEY: 'test', R2_BUCKET_NAME: 'test', R2_PUBLIC_URL: 'https://test.invalid' });
   const client = r2.getR2Client(), nativeSend = client.send; const calls = []; const keys = new Set();
   try {

@@ -5,7 +5,20 @@ const path = require('node:path');
 const express = require('express');
 const { createPhotoUpload } = require('../middleware/photoUploadMiddleware');
 const { cleanupStaging } = require('../services/mediaUploadService');
-const uploads = path.join(__dirname, '../uploads');
+const uploads = require('../services/mediaStagingService').stagingDirectory();
+
+test('crash leftovers expire while fresh inputs and unrelated files remain untouched', async t => {
+  const crypto = require('node:crypto'), { cleanupStaleStaging } = require('../services/mediaStagingService');
+  const old = path.join(uploads, crypto.randomUUID() + '-old.jpg'), fresh = path.join(uploads, crypto.randomUUID() + '-fresh.jpg'), unrelated = path.join(uploads, 'unrelated-' + crypto.randomUUID());
+  t.after(async () => { for (const file of [old, fresh, unrelated]) await fs.unlink(file).catch(() => {}); });
+  for (const file of [old, fresh, unrelated]) await fs.writeFile(file, 'fixture');
+  const past = new Date(Date.now() - 25 * 60 * 60 * 1000);
+  await fs.utimes(old, past, past); await fs.utimes(unrelated, past, past);
+  await cleanupStaleStaging();
+  assert.equal(await fs.access(old).then(() => true, () => false), false);
+  assert.equal(await fs.access(fresh).then(() => true, () => false), true);
+  assert.equal(await fs.access(unrelated).then(() => true, () => false), true);
+});
 
 async function server(t, options) {
   const before = new Set(await fs.readdir(uploads));

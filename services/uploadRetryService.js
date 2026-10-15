@@ -1,7 +1,6 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const { createReadStream } = require('node:fs');
-const path = require('node:path');
 const Operation = require('../models/UploadOperation');
 const { ApiError } = require('../utils/apiError');
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -26,7 +25,7 @@ function conflict(message, code = 'UPLOAD_RETRY_CONFLICT') {
 
 function storageFingerprint() {
   return hash(JSON.stringify([process.env.R2_ACCOUNT_ID, process.env.R2_BUCKET_NAME, process.env.R2_PUBLIC_URL, process.env.R2_FOLDER,
-    process.env.CLOUDINARY_CLOUD_NAME, process.env.CLOUDINARY_FOLDER]));
+    process.env.CLOUDINARY_CLOUD_NAME, process.env.CLOUDINARY_FOLDER, require('./photoCompressionService').PHOTO_RECIPE]));
 }
 function uploadIdentity(req, requestPath) {
   const key = req.get?.('Idempotency-Key') || req.headers?.['idempotency-key'];
@@ -89,9 +88,9 @@ async function runUploadRequest(req, work, { replay, resume = false, recordOnly 
   if (receipt.fingerprint !== fingerprint) throw conflict('The selected files or upload settings changed. Start a new upload.');
   if (receipt.status === 'REMOVED') throw conflict('These uploaded files were removed. Select the files again to start a new upload.');
   for (const file of receipt.files.filter(Boolean).flatMap(file => [file, ...(file.variants || [])])) {
-    if (file.provider === 'local' && !await fs.access(path.join(__dirname, '..', 'uploads', path.basename(file.publicId))).then(() => true, () => false)) {
+    if (file.provider === 'local') {
       await Operation.updateOne({ _id: id }, { $set: { status: 'REMOVED' } });
-      throw conflict('These uploaded files were removed. Select the files again to start a new upload.');
+      throw conflict('Re-upload these photos to Cloudflare R2 before resuming this upload.');
     }
   }
   if (receipt.status === 'COMPLETE') return replay ? replay(receipt.result) : receipt.result;
@@ -165,24 +164,8 @@ async function runUploadRequest(req, work, { replay, resume = false, recordOnly 
   return uploadStatus(claimed);
 }
 
-async function persistLocal(file, options = {}) {
-  file = await require('./photoCompressionService').preparePhotoFile(file);
-  const extension = file.mimetype === 'image/webp' ? '.webp' : file.mimetype === 'image/png' ? '.png' : ['image/jpeg', 'image/jpg'].includes(file.mimetype) ? '.jpg' : path.extname(file.originalname || '').replace(/[^.a-z0-9]/gi, '').slice(0, 12) || '.bin';
-  const base = path.basename(file.filename || file.originalname || 'media').replace(/[^a-z0-9._-]/gi, '-').replace(/\.[^.]+$/, '');
-  const name = options.uploadId ? `retry-${options.uploadId}${extension.toLowerCase()}` : `${crypto.randomUUID()}-${base}${extension.toLowerCase()}`;
-  const target = path.join(__dirname, '..', 'uploads', name);
-  const size = Number(file.size || 0) || (await fs.stat(file.path)).size;
-  const existing = options.recovering ? await fs.stat(target).catch(() => null) : null;
-  if (!existing || existing.size !== size) {
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    const staging = `${target}-${crypto.randomUUID()}.part`;
-    try { if (file.buffer) await fs.writeFile(staging, file.buffer); else await fs.copyFile(file.path, staging); await fs.rename(staging, target); }
-    finally { await fs.unlink(staging).catch(() => {}); }
-  }
-  return { url: `/uploads/${name}`, publicId: name, originalName: file.originalname, mimeType: file.mimetype, sizeBytes: file.size, provider: 'local' };
-}
 async function invalidateStoredUpload(provider, publicId) {
   if (Operation.db.readyState !== 1) return;
   await Operation.updateMany({ $or: [{ files: { $elemMatch: { provider, publicId } } }, { 'files.variants': { $elemMatch: { provider, publicId } } }] }, { $set: { status: 'REMOVED' } });
 }
-module.exports = { runUploadRequest, getUploadStatus, waitForActiveUploads, persistLocal, invalidateStoredUpload, fileDigest, storageFingerprint };
+module.exports = { runUploadRequest, getUploadStatus, waitForActiveUploads, invalidateStoredUpload, fileDigest, storageFingerprint };

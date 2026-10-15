@@ -14,17 +14,8 @@ async function analyzeStoredCandidate({ groupNumber, frames, sourceVideo, source
     const filePaths = [];
     for (const [index, frame] of frames.slice(0, 6).entries()) {
       const target = path.join(directory, `photo-${index}.jpg`);
-      if (String(frame.url).startsWith('/uploads/')) {
-        const uploads = path.resolve(__dirname, '../uploads'); const local = path.resolve(uploads, path.basename(frame.url));
-        if (path.dirname(local) !== uploads) throw new Error('Invalid stored photo');
-        await fs.copyFile(local, target);
-      } else {
-        const response = await fetch(frame.url, { signal: AbortSignal.timeout(15000) });
-        if (!response.ok || !response.body) throw new Error('The saved photo is unavailable');
-        const chunks = []; let length = 0;
-        for await (const chunk of response.body) { length += chunk.length; if (length > 5 * 1024 * 1024) throw new Error('The saved photo is too large'); chunks.push(chunk); }
-        await fs.writeFile(target, Buffer.concat(chunks));
-      }
+      const photo = await require('./productSmartFillMedia').readProductPhoto(frame.url);
+      await fs.writeFile(target, photo.buffer);
       filePaths.push(target);
     }
     const videoFiles = [];

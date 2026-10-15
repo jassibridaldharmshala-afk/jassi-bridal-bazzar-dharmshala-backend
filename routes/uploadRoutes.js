@@ -1,13 +1,10 @@
 const router = require('express').Router();
 const fs = require('fs/promises');
-const path = require('path');
 const multer = require('multer');
 const upload = require('../middleware/uploadMiddleware');
 const { protect } = require('../middleware/authMiddleware');
 const { adminOnly } = require('../middleware/adminMiddleware');
 const { isR2Configured, uploadFileToR2, uploadImageToR2 } = require('../services/r2Upload');
-const { isCloudinaryConfigured, uploadImage, uploadVideo } = require('../services/cloudinaryUpload');
-const { isLocalRequest } = require('../utils/imageUtils');
 const { badRequest } = require('../utils/apiError');
 const background = require('../services/imageBackgroundService');
 const { uploadMedia } = require('../services/mediaUploadService');
@@ -15,7 +12,7 @@ const { rateLimit } = require('express-rate-limit');
 const backgroundUpload = require('../middleware/photoUploadMiddleware').createPhotoUpload({ files: 1, fields: 0 });
 const backgroundLimit = rateLimit({ windowMs: 60000, limit: 10, standardHeaders: true, legacyHeaders: false });
 
-const uploadDir = path.join(__dirname, '..', 'uploads');
+const uploadDir = require('../services/mediaStagingService').stagingDirectory();
 const videoUpload = multer({
   storage: multer.diskStorage({
     destination(req, file, cb) {
@@ -39,14 +36,8 @@ function adminOnlyUpload(req, res, next) {
   return adminOnly(req, res, next);
 }
 
-function requiresPersistentStorage(req) {
-  return process.env.NODE_ENV === 'production' && !isLocalRequest(req);
-}
-
 function getActiveUploadProvider() {
-  if (isR2Configured()) return 'r2';
-  if (isCloudinaryConfigured()) return 'cloudinary';
-  return 'local';
+  return 'r2';
 }
 
 function isReelImportFolder(folder = '') {
@@ -56,13 +47,13 @@ function isReelImportFolder(folder = '') {
 function storageUnavailable(res, kind) {
   return res.status(503).json({
     message: kind === 'reel'
-      ? 'Reel Product Import needs Cloudflare R2 or Cloudinary. Local disk storage is not enough for video processing.'
-      : `Product ${kind} uploads must use Cloudflare R2 or Cloudinary in this environment. Please configure storage before uploading.`,
+      ? 'Connect Cloudflare R2 before importing reels.'
+      : `Connect Cloudflare R2 before uploading product ${kind}s.`,
     code: 'PERSISTENT_UPLOAD_STORAGE_REQUIRED',
   });
 }
 
-async function persistUploads(req, { folder, toR2, toCloudinary }) {
+async function persistUploads(req, { folder, toR2 }) {
   return uploadMedia(req, { folder: folder || req.query.folder, fileUpload: toR2 === uploadFileToR2 });
 }
 
@@ -91,11 +82,11 @@ router.post('/', protect, adminOnlyUpload, (req, res, next) => {
       if (!req.files?.length && req.body?.resumeUpload !== true) {
         return res.status(400).json({ message: 'No images were uploaded. Please select at least one image file.' });
       }
-      if (!isR2Configured() && !isCloudinaryConfigured() && requiresPersistentStorage(req)) {
+      if (!isR2Configured()) {
         await cleanupTempFiles(req.files);
         return storageUnavailable(res, 'image');
       }
-      const files = await persistUploads(req, { toR2: uploadImageToR2, toCloudinary: uploadImage });
+      const files = await persistUploads(req, { toR2: uploadImageToR2 });
       if (!files.length) return res.status(400).json({ message: 'No image was uploaded. Please try again.' });
       return res.status(201).json({ files, provider: getActiveUploadProvider() });
     } catch (uploadError) {
@@ -115,14 +106,13 @@ router.post('/videos', protect, adminOnlyUpload, (req, res, next) => {
       }
       const folder = req.query.folder || 'product-videos';
       const reelFolder = isReelImportFolder(folder);
-      if (!isR2Configured() && !isCloudinaryConfigured() && (requiresPersistentStorage(req) || reelFolder)) {
+      if (!isR2Configured()) {
         await cleanupTempFiles(req.files);
         return storageUnavailable(res, reelFolder ? 'reel' : 'video');
       }
       const files = await persistUploads(req, {
         folder,
         toR2: uploadFileToR2,
-        toCloudinary: uploadVideo,
       });
       if (!files.length) return res.status(400).json({ message: 'No video was uploaded. Please try again.' });
       return res.status(201).json({ files, provider: getActiveUploadProvider() });

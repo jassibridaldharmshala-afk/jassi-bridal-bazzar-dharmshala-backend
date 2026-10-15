@@ -9,7 +9,8 @@ exports.discovery = asyncHandler(async (req, res) => {
   res.set('Cache-Control', 'private, no-store').json({ ...data, recentlyViewed: rows });
 });
 exports.completeLook = asyncHandler(async (req, res) => {
-  req.commerceFilter = await require('../services/catalogCommerceService').publicFilter(req);
+  // This endpoint validates the exact source offer and candidate inventory.
+  // A whole-store catalogue readiness scan adds unrelated reads to every look.
   const data = await service.completeLook(req);
   const rows = data.products.map(p => ({ ...homeProduct(p, req), look: p.look, discoveryPurchase: p.discoveryPurchase, ...(p.rentalPreview ? { rentalPreview: p.rentalPreview } : {}) }));
   res.set('Cache-Control', 'no-store').json({ ...data, products: rows });

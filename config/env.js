@@ -44,8 +44,7 @@ function productionConfigurationIssues() {
   if (access && refresh && access === refresh) issues.push('access and refresh token secrets must be different');
   if (process.env.REQUIRE_MEDIA_STORAGE === 'true' && !(
     complete(['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME', 'R2_PUBLIC_URL'])
-    || complete(['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'])
-  )) issues.push('persistent media storage is required but incomplete');
+  )) issues.push('Cloudflare R2 media storage is required but incomplete');
   if (process.env.REQUIRE_REDIS === 'true' && !present('REDIS_URL')) issues.push('REDIS_URL is required');
   if (process.env.PAYMENTS_ENABLED === 'true' && !complete(['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'])) {
     issues.push('live payments require Razorpay key, secret and webhook secret');

@@ -43,11 +43,15 @@ function combined(base, addition) {
   return [...map.values()];
 }
 async function completeLook(req, contracts) {
-  const c = context(req.query || {}), prefs = await contracts.preferences(req), key = req.params.slug;
-  const source = await Product.findOne(contracts.publicFilter(req, mongoose.isValidObjectId(key) ? { _id: key } : { slug: key })).select(`${contracts.CARD_FIELDS} completeLookProductIds completeLookBlockedIds`).populate('category', 'name slug definitionKey').maxTimeMS(4000).lean();
+  const c = context(req.query || {}), key = req.params.slug;
+  const [prefs, source] = await Promise.all([
+    contracts.preferences(req),
+    Product.findOne(contracts.publicFilter({ ...req, commerceFilter: {} }, mongoose.isValidObjectId(key) ? { _id: key } : { slug: key })).select(`${contracts.CARD_FIELDS} completeLookProductIds completeLookBlockedIds`).populate('category', 'name slug definitionKey').maxTimeMS(4000).lean(),
+  ]);
   if (!source) throw new ApiError('NOT_FOUND', 'Product not found.');
   const mode = req.query.mode || (source.commerceMode === 'RENTAL_ONLY' || prefs.mode === 'RENTAL_ONLY' ? 'rent' : 'buy');
   if (!prefs.completeLookEnabled) return { enabled: false, products: [] };
+  if ((mode === 'buy' && (source.commerceMode === 'RENTAL_ONLY' || prefs.mode === 'RENTAL_ONLY')) || (mode === 'rent' && (!prefs.rentalEnabled || source.commerceMode === 'SALE_ONLY'))) throw new ApiError('NOT_FOUND', 'This product is unavailable in the selected shopping mode.');
   let variant = c.variantId ? source.variants?.find(v => id(v._id) === c.variantId && v.isActive !== false) : null;
   if (c.variantId && !variant) throw new ApiError('VALIDATION_ERROR', 'The selected outfit variant is unavailable.');
   const sourceListing = mode === 'rent' && c.sourceListingId ? await Listing.findOne({ _id: c.sourceListingId, storeId: req.store?._id, productId: source._id, active: true }).lean() : null;
@@ -79,7 +83,9 @@ async function completeLook(req, contracts) {
   const matchContext = { variant, selectedColour: variant?.color || sourceListing?.colour || c.colour || '', includedTypes: included };
   const rentalProducts = candidates.filter(p => ['RENTAL_ONLY', 'SALE_AND_RENTAL'].includes(p.commerceMode));
   const rentals = mode === 'rent' && prefs.rentalEnabled && req.store?._id && rentalProducts.length ? await Listing.find({ storeId: req.store._id, productId: { $in: rentalProducts.map(p => p._id) }, active: true }).sort('_id').maxTimeMS(4000).lean() : [];
-  const ready = rentals.length ? await require('./rentalSetupService').batchReadiness(req.store, rentals) : new Map();
+  const readinessListings = [...new Map([...rentals, ...existing].map(l => [id(l._id), l])).values()];
+  const ready = readinessListings.length ? await require('./rentalSetupService').batchReadiness(req.store, readinessListings) : new Map();
+  if (sourceListing && !ready.get(id(sourceListing._id))?.ready) throw new ApiError('NOT_FOUND', 'The outfit rental offer is not ready for booking.');
   const rows = [];
   for (const p of candidates) {
     const options = mode === 'rent' ? rentals.filter(l => id(l.productId) === id(p._id) && ready.get(id(l._id))?.ready && (!l.variantId || p.variants?.some(v => id(v._id) === l.variantId && v.isActive !== false))).map(l => ({ id: id(l._id), listingId: id(l._id), variantId: l.variantId || '', size: l.size || '', colour: l.colour || '', dailyRatePaise: l.dailyRatePaise, depositPaise: l.depositPaise, unit: p.lookDetails?.unit || p.attributeValues?.unit || '', mode: 'rent', requirements: l.requirements })) : saleOptions(p);
@@ -118,6 +124,6 @@ async function completeLook(req, contracts) {
     } catch (error) { p.look.availability = error.errorCode === 'OUT_OF_STOCK' ? 'UNAVAILABLE' : 'CHECK_FAILED'; p.look.availabilityMessage = error.message || 'Availability could not be checked.'; }
   }
   const display = B.balance(balanced.map(p => ({ ...p, match: { ...p.match, score: p.match.score - (['UNAVAILABLE', 'CHECK_FAILED'].includes(p.look.availability) ? 200 : 0) } })));
-  return { enabled: true, mode, products: display.map(({ match, ...p }) => ({ ...p, discoveryPurchase: p.look.mode === 'rent' ? 'RENTAL' : 'SALE', ...(p.look.mode === 'rent' ? { rentalPreview: { listingId: p.look.selectedOptionId, ...p.look.options.find(o => o.id === p.look.selectedOptionId) } } : {}) })), strategy: pinned.size ? 'OWNER_CURATED' : 'CONTEXT_MATCHED', matchingStrategy: pinned.size ? 'OWNER_AND_CONTEXT_MATCHED' : 'CONTEXT_MATCHED', checkedAt: new Date().toISOString() };
+  return { enabled: true, contractVersion: 'bridal-look-v1', mode, products: display.map(({ match, ...p }) => ({ ...p, discoveryPurchase: p.look.mode === 'rent' ? 'RENTAL' : 'SALE', ...(p.look.mode === 'rent' ? { rentalPreview: { listingId: p.look.selectedOptionId, ...p.look.options.find(o => o.id === p.look.selectedOptionId) } } : {}) })), strategy: pinned.size ? 'OWNER_CURATED' : 'CONTEXT_MATCHED', matchingStrategy: pinned.size ? 'OWNER_AND_CONTEXT_MATCHED' : 'CONTEXT_MATCHED', checkedAt: new Date().toISOString() };
 }
 module.exports = { completeLook, context, saleOptions, includedTypes, combined };

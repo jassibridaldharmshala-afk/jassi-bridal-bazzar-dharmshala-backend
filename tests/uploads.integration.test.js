@@ -13,6 +13,7 @@ const { createUploadSeller: createProvisionedSeller } = require('./photoUploadFi
 test.before(startTestEnvironment);
 test.after(stopTestEnvironment);
 test.beforeEach(resetDatabase);
+const cloud = require('./r2MediaFixture').r2MediaFixture(test);
 
 async function upload(route, field, bytes, type, name, token, headers = {}) {
   const body = new FormData();
@@ -55,21 +56,20 @@ test('admin and seller multipart uploads retain playable media and provide retri
       const result = await upload(`${actor.route}${media.suffix}`, media.field, media.bytes, media.type, `${marker}.${media.extension}`, actor.token, actor.headers);
       assert.equal(result.status, 201, JSON.stringify(result.data));
       assert.equal(result.data.files.length, 1);
-      assert.equal(result.data.provider, 'local');
+      assert.equal(result.data.provider, 'r2');
       const file = result.data.files[0];
       assert.equal(file.mimeType, media.type.startsWith('image/') ? 'image/webp' : media.type);
-      const resolved = path.resolve(__dirname, '..', 'uploads', path.basename(file.url));
-      assert.equal(resolved.startsWith(path.resolve(__dirname, '..', 'uploads') + path.sep), true);
+      const resolved = file.publicId;
+      assert.equal(file.url.startsWith(cloud.url + '/'), true);
       assert.equal(path.basename(resolved).includes(marker), true);
-      uploadedPaths.push(resolved);
-      const saved = await fs.readFile(resolved);
+      const saved = cloud.bytes(resolved);
       assert.equal(file.sizeBytes, saved.length);
       if (media.type.startsWith('image/')) {
         const decoded = await sharp(saved).metadata();
         assert.equal(decoded.format, 'webp'); assert.equal(decoded.width, 1); assert.equal(decoded.height, 1);
-        for (const variant of file.variants || []) uploadedPaths.push(path.resolve(__dirname, '..', 'uploads', variant.publicId));
+        for (const variant of file.variants || []) assert.ok(cloud.bytes(variant.publicId));
       } else assert.deepEqual(saved, media.bytes);
-      const download = await fetch(`${getBaseUrl()}${file.url}`);
+      const download = await fetch(file.url);
       assert.equal(download.status, 200);
       assert.deepEqual(Buffer.from(await download.arrayBuffer()), saved);
     }
@@ -87,6 +87,35 @@ test('invalid media and missing files are explained as validation errors without
   assert.equal((await request('/api/admin/uploads', { method: 'POST', token: admin.token, body: {} })).status, 400);
 });
 
+test('Cloudflare is required in development and Cloudinary cannot restore the local fallback', async t => {
+  const admin = await createAdmin(); cloud.disable();
+  Object.assign(process.env, { CLOUDINARY_CLOUD_NAME: 'fixture', CLOUDINARY_API_KEY: 'fixture', CLOUDINARY_API_SECRET: 'fixture' });
+  t.after(() => { for (const key of Object.keys(process.env)) if (key.startsWith('CLOUDINARY_')) delete process.env[key]; });
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+  for (const route of ['/api/admin/uploads', '/api/admin/product-drafts/bulk-upload']) {
+    const result = await upload(route, 'images', png, 'image/png', 'no-fallback.png', admin.token, { Host: 'localhost' });
+    assert.equal(result.status, 503); assert.equal(result.data.code, 'PERSISTENT_UPLOAD_STORAGE_REQUIRED');
+  }
+  assert.equal(cloud.puts, 0);
+  await assert.rejects(require('../services/generatedMediaService').persistGeneratedFile({ buffer: png, mimetype: 'image/png' }, { namespace: 'fixture', ownerId: 'owner', slot: 'photo', recipe: 'fixture' }), error => error.errorCode === 'PERSISTENT_UPLOAD_STORAGE_REQUIRED');
+  assert.equal((await request('/health')).data.imageStorage, 'unconfigured');
+  assert.equal((await request('/uploads/no-fallback.png')).status, 404);
+});
+
+test('failed Cloudflare writes clean private staging and a deliberate retry saves only cloud URLs', async () => {
+  const admin = await createAdmin(); cloud.failNextPut();
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+  const directory = require('../services/mediaStagingService').stagingDirectory();
+  const before = new Set(await fs.readdir(directory));
+  let result = await upload('/api/admin/uploads', 'images', png, 'image/png', 'storage-failure.png', admin.token);
+  assert.equal(result.status, 500); assert.equal(cloud.objects.size, 0);
+  assert.deepEqual((await fs.readdir(directory)).filter(name => !before.has(name)), []);
+  result = await upload('/api/admin/uploads', 'images', png, 'image/png', 'storage-failure.png', admin.token);
+  assert.equal(result.status, 201); assert.equal(result.data.provider, 'r2');
+  assert.ok(result.data.files.every(file => file.url.startsWith(cloud.url + '/') && !file.url.includes('/uploads/')));
+  assert.deepEqual((await fs.readdir(directory)).filter(name => !before.has(name)), []);
+});
+
 test('review and return evidence photos require customer authentication and valid image bytes', async (t) => {
   const customer = await createCustomer();
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
@@ -98,9 +127,7 @@ test('review and return evidence photos require customer authentication and vali
   const valid = await upload('/api/reviews/uploads', 'images', png, 'image/png', 'customer-review.png', customer.token);
   assert.equal(valid.status, 201, JSON.stringify(valid.data));
   assert.equal(valid.data.files.length, 1);
-  const stored = path.resolve(__dirname, '..', 'uploads', path.basename(valid.data.files[0].url));
-  t.after(() => fs.unlink(stored).catch(() => null));
-  assert.equal((await sharp(await fs.readFile(stored)).metadata()).format, 'webp');
+  assert.equal((await sharp(cloud.bytes(valid.data.files[0].publicId)).metadata()).format, 'webp');
   const returnUnauthenticated = await upload('/api/returns/uploads', 'images', png, 'image/png', 'return.png');
   assert.equal(returnUnauthenticated.status, 401);
   const returnSpoofed = await upload('/api/returns/uploads', 'images', Buffer.from('not-an-image'), 'image/png', 'spoofed-return.png', customer.token);
@@ -116,17 +143,15 @@ test('review and return evidence photos require customer authentication and vali
   assert.equal((await sharp(Buffer.from(await privateDownload.arrayBuffer())).metadata()).format, 'webp');
 });
 
-test('bulk-uploaded draft photos remain available through editing and publication with local storage', async (t) => {
+test('bulk-uploaded draft photos remain available through editing and publication with Cloudflare storage', async (t) => {
   const admin = await createAdmin();
   const marker = `qa-bulk-${crypto.randomUUID()}`;
   const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
   const result = await upload('/api/admin/product-drafts/bulk-upload', 'images', image, 'image/png', `${marker}.png`, admin.token);
   assert.equal(result.status, 201, JSON.stringify(result.data));
   const draft = result.data.data.drafts[0];
-  const filePath = path.resolve(__dirname, '..', 'uploads', path.basename(new URL(draft.image, getBaseUrl()).pathname));
-  assert.equal(path.basename(filePath).includes(marker), true);
-  t.after(() => fs.unlink(filePath).catch(() => null));
-  const saved = await fs.readFile(filePath);
+  assert.ok(draft.image.startsWith(cloud.url + '/'));
+  const saved = cloud.bytesFromUrl(draft.image);
   assert.equal((await sharp(saved).metadata()).format, 'webp', 'the draft photo must remain decodable');
   assert.equal((await request('/api/admin/product-drafts', { token: admin.token })).data.data.length, 1);
   assert.equal((await request(`/api/admin/product-drafts/${draft._id}`, { token: admin.token })).data.data.image, draft.image);
@@ -136,7 +161,7 @@ test('bulk-uploaded draft photos remain available through editing and publicatio
   const published = await request('/api/admin/product-drafts/publish-selected', { method: 'POST', token: admin.token, body: { ids: [draft._id] } });
   assert.equal(published.status, 200, JSON.stringify(published.data));
   assert.equal(published.data.data.products[0].name, 'Rose Silk Saree');
-  const served = await fetch(`${getBaseUrl()}${new URL(draft.image, getBaseUrl()).pathname}`);
+  const served = await fetch(draft.image);
   assert.equal(served.status, 200);
   assert.deepEqual(Buffer.from(await served.arrayBuffer()), saved, 'publication must retain the uploaded photo');
 });
@@ -149,10 +174,16 @@ test('quick photo analysis sends the actual uploaded image, maps categories and 
   process.env.GEMINI_API_KEY = 'isolated-photo-analysis-fixture';
   t.after(() => { delete process.env.GEMINI_API_KEY; });
   const marker = `qa-analysis-${crypto.randomUUID()}.png`;
-  const filePath = path.join(__dirname, '..', 'uploads', marker);
+  const imageUrl = `https://fixture.r2.test/products/${marker}`;
+  process.env.R2_PUBLIC_URL = 'https://fixture.r2.test';
   const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
-  await fs.writeFile(filePath, image);
-  t.after(() => fs.unlink(filePath).catch(() => null));
+  t.mock.method(require('node:dns/promises'), 'lookup', async () => [{ address: '8.8.8.8', family: 4 }]);
+  t.mock.method(require('node:https'), 'get', (url, options, callback) => {
+    assert.equal(String(url), imageUrl);
+    const req = new (require('node:events').EventEmitter)();
+    queueMicrotask(() => { const response = require('node:stream').Readable.from([image]); response.statusCode = 200; response.headers = { 'content-length': String(image.length) }; callback(response); });
+    return req;
+  });
   const originalFetch = global.fetch;
   let providerCalls = 0, quotaExceeded = false;
   t.mock.method(global, 'fetch', async (url, options) => {
@@ -161,7 +192,9 @@ test('quick photo analysis sends the actual uploaded image, maps categories and 
     assert.equal(parsed.hostname, 'generativelanguage.googleapis.com');
     providerCalls += 1;
     const sent = JSON.parse(options.body);
-    assert.equal(sent.contents[0].parts[1].inlineData.data, image.toString('base64'));
+    const photo = sent.contents[0].parts.find(part => part.inlineData)?.inlineData;
+    assert.equal(photo.mimeType, 'image/png');
+    assert.equal(photo.data, image.toString('base64'));
     if (quotaExceeded) return { ok: false, status: 429, json: async () => ({ error: { message: 'Fixture quota exhausted' } }) };
     return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({ name: 'Rose Floral Saree', categoryName: 'Sarees', colors: ['Rose'], pattern: 'Floral', fabric: 'Silk', tags: ['Saree','Floral'], description: 'Rose floral saree.', price: 999, stock: 25, confidence: { overall: 0.9 } }) }] } }] }) };
   });
@@ -171,7 +204,7 @@ test('quick photo analysis sends the actual uploaded image, maps categories and 
   const categories = [{ _id: String(adminCategory._id), name: 'Sarees' }];
   for (const actor of [{ prefix: '/api/admin', token: admin.token, categoryId: String(adminCategory._id) }, { prefix: '/api/seller', token: seller.token, headers: { 'x-store-id': seller.store.id }, categoryId: String(sellerCategory._id) }]) {
     assert.equal((await request(`${actor.prefix}/products/quick-analyze/status`, actor)).data.enabled, true);
-    const result = await request(`${actor.prefix}/products/quick-analyze`, { ...actor, method: 'POST', body: { imageUrl: `/uploads/${marker}`, categories } });
+    const result = await request(`${actor.prefix}/products/quick-analyze`, { ...actor, method: 'POST', body: { imageUrl, categories } });
     assert.equal(result.status, 200, JSON.stringify(result.data));
     assert.equal(result.data.suggestion.name, 'Rose Floral Saree');
     assert.equal(result.data.suggestion.categoryId, actor.categoryId);
@@ -180,7 +213,7 @@ test('quick photo analysis sends the actual uploaded image, maps categories and 
   }
   assert.equal(providerCalls, 2);
   quotaExceeded = true;
-  const failed = await request('/api/admin/products/quick-analyze', { method: 'POST', token: admin.token, body: { imageUrl: `/uploads/${marker}`, categories } });
+  const failed = await request('/api/admin/products/quick-analyze', { method: 'POST', token: admin.token, body: { imageUrl, categories } });
   assert.equal(failed.status, 400);
   assert.match(failed.data.message, /quota/i);
   assert.equal(providerCalls, 3, 'quota failure must not repeatedly spend provider requests');

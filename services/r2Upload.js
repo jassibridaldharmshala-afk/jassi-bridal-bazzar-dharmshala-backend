@@ -2,7 +2,8 @@ const crypto = require('crypto');
 const fs = require('fs/promises');
 const fsSync = require('fs');
 const path = require('path');
-const { preparePhotoFile } = require('./photoCompressionService');
+const { preparePhotoFile, PHOTO_RECIPE } = require('./photoCompressionService');
+const { isPhotoFile, photoFileInput, assertStoredPhoto } = require('./photoStoragePolicy');
 const { DeleteObjectCommand, HeadObjectCommand, S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 
 let r2Client;
@@ -86,16 +87,20 @@ async function alreadyStored(objectKey, options) {
 }
 
 async function uploadImageToR2(file, options = {}) {
-  file = await preparePhotoFile(file);
-  const objectKey = buildObjectKey(file, { ...options, extension: resolveFileExtension(file) });
+  file = await preparePhotoFile(/^image\//i.test(file?.mimetype || '') ? file : photoFileInput(file));
+  const buffer = file.buffer || await fs.readFile(file.path);
+  assertStoredPhoto(file, buffer);
+  // A new recipe must never recover an old multi-megabyte object/cache URL.
+  const imageOptions = { ...options, ...(options.uploadId ? { uploadId: crypto.createHash('sha256').update(options.uploadId + ':' + PHOTO_RECIPE).digest('hex') } : {}) };
+  const objectKey = buildObjectKey(file, { ...imageOptions, extension: resolveFileExtension(file) });
   if (!await alreadyStored(objectKey, options)) {
-    const buffer = file.buffer || await fs.readFile(file.path);
     await getR2Client().send(new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: objectKey,
       Body: buffer,
       ContentType: file.mimetype || 'image/webp',
       CacheControl: 'public, max-age=31536000, immutable',
+      Metadata: { 'photo-recipe': file.photo.recipe, 'source-optimized': 'true' },
     }), { abortSignal: AbortSignal.timeout(2 * 60 * 1000) });
   }
 
@@ -109,7 +114,8 @@ async function uploadImageToR2(file, options = {}) {
 }
 
 async function uploadFileToR2(file, options = {}) {
-  if (String(file.mimetype || '').startsWith('image/')) return uploadImageToR2(file, options);
+  if (await isPhotoFile(file)) return uploadImageToR2(file, options);
+  if (!/^video\/(?:mp4|webm|quicktime)$/i.test(file.mimetype || '')) throw new (require('../utils/apiError').ApiError)('UPLOAD_IMAGE_INVALID', 'Upload a supported photo or MP4, MOV or WebM video.', { statusCode: 400 });
   const extension = resolveFileExtension(file);
   const objectKey = buildObjectKey(file, { ...options, extension });
   if (await alreadyStored(objectKey, options)) return { url: buildPublicUrl(objectKey), publicId: objectKey, originalName: file.originalname };

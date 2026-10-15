@@ -34,8 +34,8 @@ function runLocal(buffer) {
 }
 
 async function removeStoredBackground(url) {
-  // Reuse the existing media reader: configured storage roots, pinned public DNS,
-  // bounded downloads and local-upload path containment. Never fetch arbitrary URLs.
+  // Read directly from configured cloud roots using pinned public DNS and
+  // bounded downloads. Never fetch arbitrary URLs or public backend files.
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'samira-background-'));
   const file = path.join(directory, 'original');
   try {

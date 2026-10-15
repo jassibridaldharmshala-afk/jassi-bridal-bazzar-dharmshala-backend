@@ -90,13 +90,6 @@ function sanitizeProductImages(images = []) {
   });
 }
 
-function buildUploadFileResponse(file, req) {
-  return {
-    url: `${getPublicApiUrl(req)}/uploads/${file.filename}`,
-    publicId: file.filename,
-    originalName: file.originalname,
-  };
-}
 
 function normalizeImageForResponse(image, req) {
   const url = typeof image === 'string' ? image : image?.url;
@@ -159,7 +152,6 @@ function isKnownMissingImage(url) {
 }
 
 module.exports = {
-  buildUploadFileResponse,
   getPublicApiUrl,
   getPrimaryImageUrl,
   normalizeImageEntries,

@@ -1,4 +1,3 @@
-const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -11,7 +10,6 @@ const { requestContext } = require('./middleware/requestContext');
 const { securityHeaders } = require('./middleware/securityHeaders');
 const { corsOptions, getAllowedOrigins } = require('./config/corsOptions');
 const { isR2Configured } = require('./services/r2Upload');
-const { isCloudinaryConfigured } = require('./services/cloudinaryUpload');
 const { redisHealthStatus } = require('./services/redisHealth');
 const instagram = require('./controllers/instagramController');
 
@@ -46,16 +44,14 @@ app.get('/api/social/deletion-status/:code', socialOAuth.wrap(socialOAuth.deleti
 app.use('/api/analytics', express.json({ limit: '32kb' }));
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb' }));
 app.use(require('./middleware/auditMiddleware').auditAdminRequests);
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-app.get('/uploads/:filename', sendImagePlaceholder);
 app.get('/placeholder.jpg', sendImagePlaceholder);
 
 app.get('/', (req, res) => res.json({ message: "Jassi Bridal Bazar Dharmshala API is running" }));
 app.get('/health', async (req, res) => {
   const dbStates = ['disconnected', 'connected', 'connecting', 'disconnecting'];
   const database = dbStates[mongoose.connection.readyState] || 'unknown';
-  const imageStorage = isR2Configured() ? 'r2' : isCloudinaryConfigured() ? 'cloudinary' : 'local';
-  const persistentImageStorageConfigured = imageStorage !== 'local';
+  const imageStorage = isR2Configured() ? 'r2' : 'unconfigured';
+  const persistentImageStorageConfigured = imageStorage === 'r2';
   const redis = await redisHealthStatus();
   const release = String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || '').trim().slice(0, 12) || null;
   const databaseRequired = process.env.NODE_ENV === 'production' || process.env.REQUIRE_DATABASE === 'true';
